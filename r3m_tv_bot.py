@@ -54,6 +54,8 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+import threading
+import time
 
 try:
     from pybit.unified_trading import HTTP
@@ -91,7 +93,13 @@ def notify(title: str, message: str) -> None:
         )
     except Exception as e:  # noqa: BLE001
         log.warning("텔레그램 알림 전송 실패: %s", e)
-
+def heartbeat_loop():
+    while True:
+        time.sleep(15 * 60)  # 15분마다
+        try:
+            notify("✅ TV 봇 정상 작동", f"웹훅 서버 정상 실행 중 (포트 {WEBHOOK_PORT})")
+        except Exception as e:  # noqa: BLE001
+            log.warning("하트비트 알림 실패: %s", e)
 
 def load_state() -> dict:
     if STATE_FILE.exists():
@@ -343,6 +351,7 @@ def main():
         "TV 웹훅 봇 시작 | notional=%sUSDT leverage=%sx port=%s",
         POSITION_NOTIONAL_USDT, LEVERAGE, WEBHOOK_PORT,
     )
+  threading.Thread(target=heartbeat_loop, daemon=True).start()
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
     log.info("웹훅 서버 실행 중 -> 0.0.0.0:%s/webhook (외부에서 받으려면 ngrok 등으로 공개 필요)", WEBHOOK_PORT)
     server.serve_forever()
