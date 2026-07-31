@@ -69,8 +69,10 @@ except ImportError:  # pragma: no cover
 
 WEBHOOK_PORT = int(os.environ.get("PORT", 8788))  # Railway 등 클라우드는 PORT 환경변수를 자동 지정함
 WEBHOOK_SECRET = "0413"   # 반드시 본인만 아는 값으로 바꾸세요
-POSITION_NOTIONAL_USDT = 3000.0         # 알림 1건당 진입 명목가치(USDT)
-LEVERAGE = 10                          # 레버리지
+POSITION_NOTIONAL_USDT = 2500.0         # 알림 1건당 진입 명목가치(USDT)
+LEVERAGE = 10    
+TAKE_PROFIT_PCT = 0.10   # 익절 +10%
+STOP_LOSS_PCT = 0.03     # 손절 -3%
 
 STATE_FILE = Path("r3m_tv_state.json")
 CATEGORY = "linear"
@@ -184,23 +186,35 @@ class BybitExecutor:
             log.debug("포지션 모드 전환 스킵/무시: %s", e)
 
     def open_position(self, symbol: str, side: str, notional_usdt: float, ref_price: float) -> Optional[float]:
-        order_side = "Sell" if side == "S" else "Buy"
-        label = "SHORT" if side == "S" else "LONG"
+            order_side = "Sell" if side == "S" else "Buy"
+            label = "SHORT" if side == "S" else "LONG"
 
-        raw_qty = notional_usdt / ref_price
-        qty = self.round_qty(symbol, raw_qty)
-        if qty <= 0:
-            log.error("계산된 수량이 0 이하입니다: %s", symbol)
-            return None
+            raw_qty = notional_usdt / ref_price
+            qty = self.round_qty(symbol, raw_qty)
+            if qty <= 0:
+                log.error("계산된 수량이 0 이하입니다: %s", symbol)
+                return None
 
-        self.set_leverage(symbol)
-        self.ensure_one_way_mode(symbol)
-        order = self.session.place_order(
-            category=CATEGORY, symbol=symbol, side=order_side, orderType="Market",
-            qty=str(qty), positionIdx=0, reduceOnly=False,
-        )
-        log.info("%s OPEN 주문 전송: %s qty=%s -> %s", label, symbol, qty, order.get("retMsg"))
-        return qty
+            if side == "S":
+                take_profit = ref_price * (1 - TAKE_PROFIT_PCT)
+                stop_loss = ref_price * (1 + STOP_LOSS_PCT)
+            else:
+                take_profit = ref_price * (1 + TAKE_PROFIT_PCT)
+                stop_loss = ref_price * (1 - STOP_LOSS_PCT)
+
+            self.set_leverage(symbol)
+            self.ensure_one_way_mode(symbol)
+            order = self.session.place_order(
+                category=CATEGORY, symbol=symbol, side=order_side, orderType="Market",
+                qty=str(qty), positionIdx=0, reduceOnly=False,
+                takeProfit=str(round(take_profit, 6)),
+                stopLoss=str(round(stop_loss, 6)),
+            )
+            log.info(
+                "%s OPEN 주문 전송: %s qty=%s TP=%.4f SL=%.4f -> %s",
+                label, symbol, qty, take_profit, stop_loss, order.get("retMsg"),
+            )
+            return qty
 
     def close_position(self, symbol: str, side: str) -> None:
         entry_bybit_side = "Sell" if side == "S" else "Buy"
