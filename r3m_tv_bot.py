@@ -99,7 +99,31 @@ def heartbeat_loop():
     while True:
         time.sleep(5 * 60)  # 5분마다
         try:
-            notify("✅ TV 봇 정상 작동", f"웹훅 서버 정상 실행 중 (포트 {WEBHOOK_PORT})")
+            wallet = _executor.session.get_wallet_balance(accountType="UNIFIED", coin="USDT")
+            coin_info = wallet["result"]["list"][0]["coin"][0]
+            usdt_balance = coin_info.get("walletBalance", "?")
+            unrealized_pnl = coin_info.get("unrealisedPnl", "?")
+
+            pos_resp = _executor.session.get_positions(category=CATEGORY, settleCoin="USDT")
+            pos_list = pos_resp.get("result", {}).get("list", [])
+            open_positions = [p for p in pos_list if float(p.get("size", 0)) > 0]
+
+            if open_positions:
+                lines = []
+                for p in open_positions:
+                    lines.append(
+                        f"- {p['symbol']} {p['side']} 수량:{p['size']} PNL:{p.get('unrealisedPnl', '?')}"
+                    )
+                pos_text = "\n".join(lines)
+            else:
+                pos_text = "보유 포지션 없음"
+
+            msg = (
+                f"USDT 잔고: {usdt_balance}\n"
+                f"미실현 손익 합계: {unrealized_pnl}\n\n"
+                f"포지션:\n{pos_text}"
+            )
+            notify("📊 5분 정기 리포트", msg)
         except Exception as e:  # noqa: BLE001
             log.warning("하트비트 알림 실패: %s", e)
 
