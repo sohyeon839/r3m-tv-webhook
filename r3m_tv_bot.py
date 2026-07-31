@@ -66,9 +66,9 @@ except ImportError:  # pragma: no cover
 # ----------------------------------------------------------------------------
 
 WEBHOOK_PORT = int(os.environ.get("PORT", 8788))  # Railway 등 클라우드는 PORT 환경변수를 자동 지정함
-WEBHOOK_SECRET = "change-me-please"   # 반드시 본인만 아는 값으로 바꾸세요
-POSITION_NOTIONAL_USDT = 50.0         # 알림 1건당 진입 명목가치(USDT)
-LEVERAGE = 1                          # 레버리지
+WEBHOOK_SECRET = "0413"   # 반드시 본인만 아는 값으로 바꾸세요
+POSITION_NOTIONAL_USDT = 3000.0         # 알림 1건당 진입 명목가치(USDT)
+LEVERAGE = 10                          # 레버리지
 
 STATE_FILE = Path("r3m_tv_state.json")
 CATEGORY = "linear"
