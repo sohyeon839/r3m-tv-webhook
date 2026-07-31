@@ -97,7 +97,7 @@ def notify(title: str, message: str) -> None:
         log.warning("텔레그램 알림 전송 실패: %s", e)
 def heartbeat_loop():
     while True:
-        time.sleep(15 * 60)  # 15분마다
+        time.sleep(5 * 60)  # 5분마다
         try:
             notify("✅ TV 봇 정상 작동", f"웹훅 서버 정상 실행 중 (포트 {WEBHOOK_PORT})")
         except Exception as e:  # noqa: BLE001
