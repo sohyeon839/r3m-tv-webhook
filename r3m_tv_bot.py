@@ -365,7 +365,7 @@ def main():
         "TV 웹훅 봇 시작 | notional=%sUSDT leverage=%sx port=%s",
         POSITION_NOTIONAL_USDT, LEVERAGE, WEBHOOK_PORT,
     )
-  threading.Thread(target=heartbeat_loop, daemon=True).start()
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
     log.info("웹훅 서버 실행 중 -> 0.0.0.0:%s/webhook (외부에서 받으려면 ngrok 등으로 공개 필요)", WEBHOOK_PORT)
     server.serve_forever()
