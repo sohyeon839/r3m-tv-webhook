@@ -73,7 +73,7 @@ WEBHOOK_SECRET = "0413"   # 반드시 본인만 아는 값으로 바꾸세요
 POSITION_NOTIONAL_USDT = 2500.0         # 알림 1건당 진입 명목가치(USDT)
 LEVERAGE = 10    
 TAKE_PROFIT_PCT = 0.10   # 익절: 증거금 대비 수익률 +10% (레버리지 반영해서 자동 계산)
-STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5% (증거금 기준 10배 레버리지 시 -5%)
+STOP_LOSS_PCT = 0.007    # 손절: 진입가 대비 -0.7% (증거금 기준 10배 레버리지 시 -7%)
 
 STATE_FILE = Path("r3m_tv_state.json")
 CATEGORY = "linear"
@@ -255,28 +255,31 @@ class BybitExecutor:
             )
             return qty
 
-    def close_position(self, symbol: str, side: str) -> None:
-        entry_bybit_side = "Sell" if side == "S" else "Buy"
-        close_order_side = "Buy" if side == "S" else "Sell"
-        label = "SHORT" if side == "S" else "LONG"
+    def close_position(self, symbol: str, side: str) -> Optional[dict]:
+            entry_bybit_side = "Sell" if side == "S" else "Buy"
+            close_order_side = "Buy" if side == "S" else "Sell"
+            label = "SHORT" if side == "S" else "LONG"
 
-        pos_resp = self.session.get_positions(category=CATEGORY, symbol=symbol)
-        pos_list = pos_resp.get("result", {}).get("list", [])
-        size = 0.0
-        for p in pos_list:
-            if p.get("side") == entry_bybit_side and float(p.get("size", 0)) > 0:
-                size = float(p["size"])
-                break
+            pos_resp = self.session.get_positions(category=CATEGORY, symbol=symbol)
+            pos_list = pos_resp.get("result", {}).get("list", [])
+            size = 0.0
+            pnl = 0.0
+            for p in pos_list:
+                if p.get("side") == entry_bybit_side and float(p.get("size", 0)) > 0:
+                    size = float(p["size"])
+                    pnl = float(p.get("unrealisedPnl", 0) or 0)
+                    break
 
-        if size <= 0:
-            log.warning("바이비트에 %s %s 포지션이 이미 없습니다(스킵).", symbol, label)
-            return
+            if size <= 0:
+                log.warning("바이비트에 %s %s 포지션이 이미 없습니다(스킵).", symbol, label)
+                return None
 
-        order = self.session.place_order(
-            category=CATEGORY, symbol=symbol, side=close_order_side, orderType="Market",
-            qty=str(size), positionIdx=0, reduceOnly=True,
-        )
-        log.info("%s CLOSE 주문 전송: %s qty=%s -> %s", label, symbol, size, order.get("retMsg"))
+            order = self.session.place_order(
+                category=CATEGORY, symbol=symbol, side=close_order_side, orderType="Market",
+                qty=str(size), positionIdx=0, reduceOnly=True,
+            )
+            log.info("%s CLOSE 주문 전송: %s qty=%s -> %s", label, symbol, size, order.get("retMsg"))
+            return {"qty": size, "pnl": pnl}
 
 
 # ----------------------------------------------------------------------------
@@ -308,31 +311,49 @@ def handle_alert(payload: dict) -> None:
             if payload.get("price"):
                 ref_price = float(payload["price"])
         except (TypeError, ValueError):
-            ref_price = None
-        if not ref_price:
-            ref_price = _executor.get_mark_price(symbol)
+                ref_price = None
+            if not ref_price:
+                ref_price = _executor.get_mark_price(symbol)
 
-        qty = _executor.open_position(symbol, side, POSITION_NOTIONAL_USDT, ref_price)
-        if qty:
-            positions[symbol] = {"side": side, "qty": qty, "entry": ref_price}
+            qty = _executor.open_position(symbol, side, POSITION_NOTIONAL_USDT, ref_price)
+            if qty:
+                positions[symbol] = {"side": side, "qty": qty, "entry": ref_price}
+                save_state(_state)
+                label = "🔴 숏" if side == "S" else "🟢 롱"
+                notify(
+                    "🚀 신규 진입",
+                    f"{label} 진입 완료\n"
+                    f"━━━━━━━━━━\n"
+                    f"📊 종목: {symbol}\n"
+                    f"📦 수량: {qty}\n"
+                    f"💰 진입가: {ref_price}"
+                )
+            else:
+                log.warning("%s 진입 실패", symbol)
+
+        else:  # exit
+            pos = positions.get(symbol)
+            if not pos:
+                log.info("%s 추적 중인 포지션이 없어 청산 스킵", symbol)
+                return
+            close_side = pos.get("side", "S")
+            result = _executor.close_position(symbol, close_side)
+            positions.pop(symbol, None)
             save_state(_state)
-            label = "숏" if side == "S" else "롱"
-            notify("TV 진입", f"{label} {symbol}\n수량: {qty} / 기준가: {ref_price}")
-        else:
-            log.warning("%s 진입 실패", symbol)
-
-    else:  # exit
-        pos = positions.get(symbol)
-        if not pos:
-            log.info("%s 추적 중인 포지션이 없어 청산 스킵", symbol)
-            return
-        close_side = pos.get("side", "S")
-        _executor.close_position(symbol, close_side)
-        positions.pop(symbol, None)
-        save_state(_state)
-        label = "숏" if close_side == "S" else "롱"
-        notify("TV 청산", f"{label} {symbol}")
-
+            label = "🔴 숏" if close_side == "S" else "🟢 롱"
+            if result:
+                pnl = result["pnl"]
+                emoji = "💰" if pnl >= 0 else "💸"
+                sign = "+" if pnl >= 0 else ""
+                notify(
+                    "✅ 포지션 청산",
+                    f"{label} 청산 완료\n"
+                    f"━━━━━━━━━━\n"
+                    f"📊 종목: {symbol}\n"
+                    f"{emoji} 손익: {sign}{pnl:.2f} USDT"
+                )
+            else:
+                notify("✅ 포지션 청산", f"{label} 청산 완료\n📊 종목: {symbol}")
 
 class WebhookHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # 외부 터널 서비스와의 연결 호환성을 위해 명시
