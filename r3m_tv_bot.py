@@ -45,6 +45,7 @@ TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  : (선택) 텔레그램 알림용
 from __future__ import annotations
 
 import json
+import re
 import logging
 import math
 import os
@@ -145,7 +146,20 @@ def normalize_symbol(sym: str) -> str:
     if not sym.endswith("USDT"):
         sym += "USDT"
     return sym
+def parse_panterra_text(text: str) -> Optional[dict]:
+    m = re.search(r"종목\s*[:：]\s*[A-Z]*:?([A-Z0-9]+?)(?:\.P)?\s", text)
+    if not m:
+        return None
+    symbol = m.group(1)
 
+    if "매수" in text:
+        side = "long"
+    elif "매도" in text:
+        side = "short"
+    else:
+        return None
+
+    return {"secret": WEBHOOK_SECRET, "symbol": symbol, "side": side, "action": "entry"}
 
 # ----------------------------------------------------------------------------
 # 바이비트 실행 래퍼
@@ -337,7 +351,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
 
         try:
-            payload = json.loads(raw.decode("utf-8"))
+            raw_text = raw.decode("utf-8", errors="ignore")
+            try:
+                payload = json.loads(raw_text)
+            except Exception:  # noqa: BLE001
+                payload = parse_panterra_text(raw_text)
+                if payload is None:
+                    raise ValueError("파싱 실패")
         except Exception:  # noqa: BLE001
             body = b'{"error":"invalid json"}'
             self.send_response(400)
