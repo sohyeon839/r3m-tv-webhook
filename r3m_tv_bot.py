@@ -316,52 +316,53 @@ def handle_alert(payload: dict) -> None:
 
         ref_price = None
         try:
-                if payload.get("price"):
-                    ref_price = float(payload["price"])
-    except (TypeError, ValueError):
-                ref_price = None
-            if not ref_price:
-                ref_price = _executor.get_mark_price(symbol)
+            if payload.get("price"):
+                ref_price = float(payload["price"])
+        except (TypeError, ValueError):
+            ref_price = None
 
-            qty = _executor.open_position(symbol, side, POSITION_NOTIONAL_USDT, ref_price)
-            if qty:
-                positions[symbol] = {"side": side, "qty": qty, "entry": ref_price}
-                save_state(_state)
-                label = "🔴 숏" if side == "S" else "🟢 롱"
-                notify(
-                    "🚀 신규 진입",
-                    f"{label} 진입 완료\n"
-                    f"━━━━━━━━━━\n"
-                    f"📊 종목: {symbol}\n"
-                    f"📦 수량: {qty}\n"
-                    f"💰 진입가: {ref_price}"
-                )
-            else:
-                log.warning("%s 진입 실패", symbol)
+        if not ref_price:
+            ref_price = _executor.get_mark_price(symbol)
 
-        else:  # exit
-            pos = positions.get(symbol)
-            if not pos:
-                log.info("%s 추적 중인 포지션이 없어 청산 스킵", symbol)
-                return
-            close_side = pos.get("side", "S")
-            result = _executor.close_position(symbol, close_side)
-            positions.pop(symbol, None)
+        qty = _executor.open_position(symbol, side, POSITION_NOTIONAL_USDT, ref_price)
+        if qty:
+            positions[symbol] = {"side": side, "qty": qty, "entry": ref_price}
             save_state(_state)
-            label = "🔴 숏" if close_side == "S" else "🟢 롱"
-            if result:
-                pnl = result["pnl"]
-                emoji = "💰" if pnl >= 0 else "💸"
-                sign = "+" if pnl >= 0 else ""
-                notify(
-                    "✅ 포지션 청산",
-                    f"{label} 청산 완료\n"
-                    f"━━━━━━━━━━\n"
-                    f"📊 종목: {symbol}\n"
-                    f"{emoji} 손익: {sign}{pnl:.2f} USDT"
-                )
-            else:
-                notify("✅ 포지션 청산", f"{label} 청산 완료\n📊 종목: {symbol}")
+            label = "🔴 숏" if side == "S" else "🟢 롱"
+            notify(
+                "🚀 신규 진입",
+                f"{label} 진입 완료\n"
+                f"━━━━━━━━━━\n"
+                f"📊 종목: {symbol}\n"
+                f"📦 수량: {qty}\n"
+                f"💰 진입가: {ref_price}"
+            )
+        else:
+            log.warning("%s 진입 실패", symbol)
+
+    else:  # exit
+        pos = positions.get(symbol)
+        if not pos:
+            log.info("%s 추적 중인 포지션이 없어 청산 스킵", symbol)
+            return
+        close_side = pos.get("side", "S")
+        result = _executor.close_position(symbol, close_side)
+        positions.pop(symbol, None)
+        save_state(_state)
+        label = "🔴 숏" if close_side == "S" else "🟢 롱"
+        if result:
+            pnl = result["pnl"]
+            emoji = "💰" if pnl >= 0 else "💸"
+            sign = "+" if pnl >= 0 else ""
+            notify(
+                "✅ 포지션 청산",
+                f"{label} 청산 완료\n"
+                f"━━━━━━━━━━\n"
+                f"📊 종목: {symbol}\n"
+                f"{emoji} 손익: {sign}{pnl:.2f} USDT"
+            )
+        else:
+            notify("✅ 포지션 청산", f"{label} 청산 완료\n📊 종목: {symbol}")
 
 class WebhookHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # 외부 터널 서비스와의 연결 호환성을 위해 명시
