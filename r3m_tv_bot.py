@@ -72,8 +72,8 @@ WEBHOOK_PORT = int(os.environ.get("PORT", 8788))  # Railway 등 클라우드는 
 WEBHOOK_SECRET = "0413"   # 반드시 본인만 아는 값으로 바꾸세요
 POSITION_NOTIONAL_USDT = 2500.0         # 알림 1건당 진입 명목가치(USDT)
 LEVERAGE = 10    
-TAKE_PROFIT_PCT = 0.10   # 익절 +10%
-STOP_LOSS_PCT = 0.03     # 손절 -3%
+TAKE_PROFIT_PCT = 0.10   # 익절: 증거금 대비 수익률 +10% (레버리지 반영해서 자동 계산)
+STOP_LOSS_PCT = 0.05     # 손절: 진입가 대비 -5% (가격 자체 기준)
 
 STATE_FILE = Path("r3m_tv_state.json")
 CATEGORY = "linear"
@@ -233,13 +233,14 @@ class BybitExecutor:
                 log.error("계산된 수량이 0 이하입니다: %s", symbol)
                 return None
 
+            tp_price_pct = TAKE_PROFIT_PCT / LEVERAGE
+
             if side == "S":
-                take_profit = ref_price * (1 - TAKE_PROFIT_PCT)
+                take_profit = ref_price * (1 - tp_price_pct)
                 stop_loss = ref_price * (1 + STOP_LOSS_PCT)
             else:
-                take_profit = ref_price * (1 + TAKE_PROFIT_PCT)
+                take_profit = ref_price * (1 + tp_price_pct)
                 stop_loss = ref_price * (1 - STOP_LOSS_PCT)
-
             self.set_leverage(symbol)
             self.ensure_one_way_mode(symbol)
             order = self.session.place_order(
