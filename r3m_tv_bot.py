@@ -73,7 +73,7 @@ WEBHOOK_SECRET = "0413"   # 반드시 본인만 아는 값으로 바꾸세요
 POSITION_NOTIONAL_USDT = 2500.0         # 알림 1건당 진입 명목가치(USDT)
 LEVERAGE = 10    
 TAKE_PROFIT_PCT = 0.10   # 익절: 증거금 대비 수익률 +10% (레버리지 반영해서 자동 계산)
-STOP_LOSS_PCT = 0.05     # 손절: 진입가 대비 -5% (가격 자체 기준)
+STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5% (증거금 기준 10배 레버리지 시 -5%)
 
 STATE_FILE = Path("r3m_tv_state.json")
 CATEGORY = "linear"
