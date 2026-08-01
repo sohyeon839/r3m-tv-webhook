@@ -102,8 +102,10 @@ def heartbeat_loop():
         try:
             wallet = _executor.session.get_wallet_balance(accountType="UNIFIED", coin="USDT")
             coin_info = wallet["result"]["list"][0]["coin"][0]
-            usdt_balance = coin_info.get("walletBalance", "?")
-            unrealized_pnl = coin_info.get("unrealisedPnl", "?")
+            usdt_balance = float(coin_info.get("walletBalance", 0) or 0)
+            unrealized_pnl = float(coin_info.get("unrealisedPnl", 0) or 0)
+            pnl_emoji = "📈" if unrealized_pnl >= 0 else "📉"
+            pnl_sign = "+" if unrealized_pnl >= 0 else ""
 
             pos_resp = _executor.session.get_positions(category=CATEGORY, settleCoin="USDT")
             pos_list = pos_resp.get("result", {}).get("list", [])
@@ -112,19 +114,25 @@ def heartbeat_loop():
             if open_positions:
                 lines = []
                 for p in open_positions:
+                    side_label = "🟢 롱" if p["side"] == "Buy" else "🔴 숏"
+                    p_pnl = float(p.get("unrealisedPnl", 0) or 0)
+                    p_sign = "+" if p_pnl >= 0 else ""
                     lines.append(
-                        f"- {p['symbol']} {p['side']} 수량:{p['size']} PNL:{p.get('unrealisedPnl', '?')}"
+                        f"{side_label} {p['symbol']}\n"
+                        f"   수량: {p['size']} | 손익: {p_sign}{p_pnl:.2f} USDT"
                     )
-                pos_text = "\n".join(lines)
+                pos_text = "\n\n".join(lines)
             else:
                 pos_text = "보유 포지션 없음"
 
             msg = (
-                f"USDT 잔고: {usdt_balance}\n"
-                f"미실현 손익 합계: {unrealized_pnl}\n\n"
-                f"포지션:\n{pos_text}"
+                f"━━━━━━━━━━\n"
+                f"💰 USDT 잔고: {usdt_balance:.2f}\n"
+                f"{pnl_emoji} 미실현 손익: {pnl_sign}{unrealized_pnl:.2f}\n"
+                f"━━━━━━━━━━\n\n"
+                f"📌 보유 포지션\n{pos_text}"
             )
-            notify("📊 5분 정기 리포트", msg)
+            notify("📊 정기 리포트", msg)
         except Exception as e:  # noqa: BLE001
             log.warning("하트비트 알림 실패: %s", e)
 
