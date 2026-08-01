@@ -316,9 +316,9 @@ def handle_alert(payload: dict) -> None:
 
         ref_price = None
         try:
-            if payload.get("price"):
-                ref_price = float(payload["price"])
-        except (TypeError, ValueError):
+                if payload.get("price"):
+                    ref_price = float(payload["price"])
+            except (TypeError, ValueError):
                 ref_price = None
             if not ref_price:
                 ref_price = _executor.get_mark_price(symbol)
