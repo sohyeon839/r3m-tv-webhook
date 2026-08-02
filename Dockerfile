@@ -9,6 +9,7 @@ COPY requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY r3m_tv_bot.py .
+COPY r3m_tv_bot_okx.py .
 
 # Railway가 자동으로 PORT 환경변수를 주입합니다. 봇 코드가 그 값을 그대로 읽습니다.
 CMD ["python", "r3m_tv_bot.py"]
