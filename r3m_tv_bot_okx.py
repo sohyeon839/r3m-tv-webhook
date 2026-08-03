@@ -40,6 +40,7 @@ import base64
 import hmac
 import hashlib
 import json
+import re
 import logging
 import math
 import os
@@ -404,9 +405,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(length) if length else b""
 
+       raw_text = raw.decode("utf-8", errors="ignore")
         try:
-            payload = json.loads(raw.decode("utf-8", errors="ignore"))
+            match = re.search(r"\{.*?\}", raw_text, re.DOTALL)
+            if not match:
+                raise ValueError("JSON 블록을 찾을 수 없습니다")
+            payload = json.loads(match.group(0))
         except Exception:  # noqa: BLE001
+            log.warning("JSON 파싱 실패, 원문: %s", raw_text[:200])
             body = b'{"error":"invalid json"}'
             self.send_response(400)
             self.send_header("Content-Length", str(len(body)))
