@@ -420,6 +420,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if re.search(r"매도|숏|SHORT|SELL", raw_text, re.IGNORECASE):
+            payload["side"] = "short"
+        elif re.search(r"매수|롱|LONG|BUY", raw_text, re.IGNORECASE):
+            payload["side"] = "long"
         if payload.get("secret") != WEBHOOK_SECRET:
             log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
             body = b'{"error":"unauthorized"}'
