@@ -116,7 +116,27 @@ def normalize_symbol(sym: str) -> str:
     else:
         base, quote = sym, "USDT"
     return f"{base}-{quote}-SWAP"
-
+  
+def extract_json_block(text: str) -> Optional[str]:
+    """
+    문자열 안에서 제일 처음 나오는 '{' 부터, 그것과 짝이 맞는 '}' 까지를
+    정확히 찾아서 돌려줍니다. "{{ticker}}" 처럼 중괄호가 중첩된 경우에도
+    괄호 개수를 세어가며 짝을 맞추기 때문에 안전합니다.
+    짝이 맞는 '}'를 못 찾으면 None을 돌려줍니다.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
 
 # ----------------------------------------------------------------------------
 # OKX 실행 래퍼
