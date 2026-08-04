@@ -425,7 +425,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(length) if length else b""
 
-       raw_text = raw.decode("utf-8", errors="ignore")
+        raw_text = raw.decode("utf-8", errors="ignore")
         try:
             json_block = extract_json_block(raw_text)
             if not json_block:
