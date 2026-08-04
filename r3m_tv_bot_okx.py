@@ -405,12 +405,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(length) if length else b""
 
-        raw_text = raw.decode("utf-8", errors="ignore")
+       raw_text = raw.decode("utf-8", errors="ignore")
         try:
-            match = re.search(r"\{.*?\}", raw_text, re.DOTALL)
-            if not match:
+            json_block = extract_json_block(raw_text)
+            if not json_block:
                 raise ValueError("JSON 블록을 찾을 수 없습니다")
-            payload = json.loads(match.group(0))
+            payload = json.loads(json_block)
         except Exception:  # noqa: BLE001
             log.warning("JSON 파싱 실패, 원문: %s", raw_text[:200])
             body = b'{"error":"invalid json"}'
