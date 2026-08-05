@@ -137,7 +137,25 @@ def extract_json_block(text: str) -> Optional[str]:
             if depth == 0:
                 return text[start:i + 1]
     return None
+def parse_panterra_text(text: str) -> Optional[dict]:
+    """
+    JSON이 아예 없이 순수 텍스트로만 오는 판테라 알람을 위한 파서입니다.
+    "종목 : BYBIT:BTCUSDT.P" 형태에서 심볼을 뽑고, "매수"/"매도" 글자로
+    방향을 판단합니다. secret 값은 텍스트에 없으므로 자동으로 채워 넣습니다.
+    """
+    m = re.search(r"종목\s*[:：]\s*[A-Z]*:?([A-Z0-9]+?)(?:\.P)?\s", text)
+    if not m:
+        return None
+    symbol = m.group(1)
 
+    if "매수" in text:
+        side = "long"
+    elif "매도" in text:
+        side = "short"
+    else:
+        return None
+
+    return {"secret": WEBHOOK_SECRET, "symbol": symbol, "side": side, "action": "entry"}
 # ----------------------------------------------------------------------------
 # OKX 실행 래퍼
 # ----------------------------------------------------------------------------
