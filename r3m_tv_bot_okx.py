@@ -414,7 +414,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-  def do_POST(self):
+    def do_POST(self):
         self.close_connection = True
         if self.path.rstrip("/") != "/webhook":
             self.send_response(404)
