@@ -445,10 +445,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         raw_text = raw.decode("utf-8", errors="ignore")
         try:
+            raw_text = raw.decode("utf-8", errors="ignore")
+        try:
             json_block = extract_json_block(raw_text)
-            if not json_block:
-                raise ValueError("JSON 블록을 찾을 수 없습니다")
-            payload = json.loads(json_block)
+            if json_block:
+                payload = json.loads(json_block)
+            else:
+                payload = parse_panterra_text(raw_text)
+                if payload is None:
+                    raise ValueError("JSON도 없고 텍스트 파싱도 실패했습니다")
+        except Exception:  # noqa: BLE001
         except Exception:  # noqa: BLE001
             log.warning("JSON 파싱 실패, 원문: %s", raw_text[:200])
             body = b'{"error":"invalid json"}'
