@@ -445,8 +445,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         raw_text = raw.decode("utf-8", errors="ignore")
         try:
-            raw_text = raw.decode("utf-8", errors="ignore")
-        try:
             json_block = extract_json_block(raw_text)
             if json_block:
                 payload = json.loads(json_block)
@@ -455,11 +453,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 if payload is None:
                     raise ValueError("JSON도 없고 텍스트 파싱도 실패했습니다")
         except Exception:  # noqa: BLE001
-        except Exception:  # noqa: BLE001
             log.warning("JSON 파싱 실패, 원문: %s", raw_text[:200])
             body = b'{"error":"invalid json"}'
             self.send_response(400)
             self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
             self.end_headers()
             self.wfile.write(body)
             return
