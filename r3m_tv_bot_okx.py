@@ -414,7 +414,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def do_POST(self):
+  def do_POST(self):
         self.close_connection = True
         if self.path.rstrip("/") != "/webhook":
             self.send_response(404)
@@ -444,14 +444,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
             payload["side"] = "short"
         elif re.search(r"매수|롱|LONG|BUY", raw_text, re.IGNORECASE):
             payload["side"] = "long"
-          if "스퀘어" not in raw_text and "SQUARE" not in raw_text.upper():
-            log.info("스퀘어 신호가 아니라서 진입 스킵: %s", raw_text[:100])
-            body = b'{"ok":true,"skipped":"not square signal"}'
+
+        raw_upper = raw_text.upper()
+        is_square = "스퀘어" in raw_text or "SQUARE" in raw_upper
+        is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
+        if not is_square and not is_panterra:
+            log.info("스퀘어/판테라 신호가 아니라서 진입 스킵: %s", raw_text[:100])
+            body = b'{"ok":true,"skipped":"not allowed signal"}'
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
+
         if payload.get("secret") != WEBHOOK_SECRET:
             log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
             body = b'{"error":"unauthorized"}'
