@@ -460,9 +460,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-            self.end_headers()
-            self.wfile.write(body)
-            return
+           
 
         if re.search(r"매도|숏|SHORT|SELL", raw_text, re.IGNORECASE):
             payload["side"] = "short"
