@@ -139,18 +139,18 @@ def extract_json_block(text: str) -> Optional[str]:
     return None
 def parse_panterra_text(text: str) -> Optional[dict]:
     """
-    JSON이 아예 없이 순수 텍스트로만 오는 판테라 알람을 위한 파서입니다.
-    "종목 : BYBIT:BTCUSDT.P" 형태에서 심볼을 뽑고, "매수"/"매도" 글자로
-    방향을 판단합니다. secret 값은 텍스트에 없으므로 자동으로 채워 넣습니다.
+    JSON이 아예 없이 순수 텍스트로만 오는 알람(판테라 / ATH Ultimate)을
+    위한 파서입니다. secret 값은 텍스트에 없으므로 자동으로 채워 넣습니다.
     """
-    m = re.search(r"종목\s*[:：]\s*[A-Z]*:?([A-Z0-9]+?)(?:\.P)?\s", text)
-    if not m:
-        return None
-    symbol = m.group(1)
+    # 1) 종목 판단: "종목 : BYBIT:XXXUSDT.P" 형태가 있으면 그 심볼을 쓰고,
+    #    없으면 BTCUSDT 전용 알람이므로 무조건 BTCUSDT로 간주합니다.
+    m = re.search(r"종목\s*[:：]\s*[A-Z]*:?([A-Z0-9]+?)(?:\.P)?(?:\s|$)", text)
+    symbol = m.group(1) if m else "BTCUSDT"
 
-    if "매수" in text:
+    # 2) 방향 판단
+    if "매수" in text or "파랑빔" in text or "LONG" in text.upper():
         side = "long"
-    elif "매도" in text:
+    elif "매도" in text or "노랑빔" in text or "SHORT" in text.upper():
         side = "short"
     else:
         return None
