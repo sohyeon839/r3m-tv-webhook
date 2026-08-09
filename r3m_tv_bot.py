@@ -413,8 +413,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if payload.get("source") == "whalehunter":
-            payload["_source"] = "whalehunter"
+        if payload.get("source") != "whalehunter":
+            log.info("웨일헌터 신호가 아니라서 스킵: %s", raw_text[:100])
+            body = b'{"ok":true,"skipped":"not whalehunter"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
           
         if payload.get("secret") != WEBHOOK_SECRET:
             log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
