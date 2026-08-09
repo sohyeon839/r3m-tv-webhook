@@ -62,8 +62,8 @@ WEBHOOK_PORT = int(os.environ.get("PORT", 8789))
 WEBHOOK_SECRET = "0413"   # 반드시 본인만 아는 값으로 바꾸세요
 POSITION_NOTIONAL_USDT = 3000.0
 LEVERAGE = 20
-TAKE_PROFIT_PCT = 0.10   # 익절: 증거금 대비 수익률 +10%
-STOP_LOSS_PCT = 0.007    # 손절: 진입가 대비 -0.7%
+TAKE_PROFIT_PCT = 0.07   # 익절: 증거금 대비 수익률 +10%
+STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.7%
 
 STATE_FILE = Path("r3m_tv_okx_state.json")
 OKX_BASE_URL = "https://www.okx.com"
