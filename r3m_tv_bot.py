@@ -215,15 +215,14 @@ class BybitExecutor:
         return float(tick["result"]["list"][0]["lastPrice"])
 
     def set_leverage(self, symbol: str, leverage: int) -> None:
-    try:
-        self.session.set_leverage(
-            category=CATEGORY, symbol=symbol,
-            buyLeverage=str(leverage), sellLeverage=str(leverage),
-        )
-    except Exception as e:  # noqa: BLE001
-        log.debug("레버리지 설정 스킵/무시: %s", e)
+        try:
+            self.session.set_leverage(
+                category=CATEGORY, symbol=symbol,
+                buyLeverage=str(leverage), sellLeverage=str(leverage),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.debug("레버리지 설정 스킵/무시: %s", e)
             
-
     def ensure_one_way_mode(self, symbol: str) -> None:
         """
         계좌가 헤지 모드(Hedge Mode)로 되어있으면 positionIdx=0 주문이
