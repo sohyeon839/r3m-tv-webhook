@@ -74,7 +74,11 @@ POSITION_NOTIONAL_USDT = 2500.0         # 알림 1건당 진입 명목가치(USD
 LEVERAGE = 10    
 TAKE_PROFIT_PCT = 0.10   # 익절: 증거금 대비 수익률 +10% (레버리지 반영해서 자동 계산)
 STOP_LOSS_PCT = 0.007    # 손절: 진입가 대비 -0.7% (증거금 기준 10배 레버리지 시 -7%)
-
+# 웨일헌터 전용 설정 (실제 가격 변동률 기준 %)
+WHALEHUNTER_NOTIONAL_USDT = 100.0
+WHALEHUNTER_LEVERAGE = 3
+WHALEHUNTER_TP_PCT = 0.10
+WHALEHUNTER_SL_PCT = 0.05
 STATE_FILE = Path("r3m_tv_state.json")
 CATEGORY = "linear"
 
@@ -210,14 +214,15 @@ class BybitExecutor:
         tick = self.session.get_tickers(category=CATEGORY, symbol=symbol)
         return float(tick["result"]["list"][0]["lastPrice"])
 
-    def set_leverage(self, symbol: str) -> None:
-        try:
-            self.session.set_leverage(
-                category=CATEGORY, symbol=symbol,
-                buyLeverage=str(LEVERAGE), sellLeverage=str(LEVERAGE),
-            )
-        except Exception as e:  # noqa: BLE001
-            log.debug("레버리지 설정 스킵/무시: %s", e)
+    def set_leverage(self, symbol: str, leverage: int) -> None:
+    try:
+        self.session.set_leverage(
+            category=CATEGORY, symbol=symbol,
+            buyLeverage=str(leverage), sellLeverage=str(leverage),
+        )
+    except Exception as e:  # noqa: BLE001
+        log.debug("레버리지 설정 스킵/무시: %s", e)
+            
 
     def ensure_one_way_mode(self, symbol: str) -> None:
         """
@@ -231,32 +236,22 @@ class BybitExecutor:
         except Exception as e:  # noqa: BLE001
             log.debug("포지션 모드 전환 스킵/무시: %s", e)
 
-    def open_position(self, symbol: str, side: str, notional_usdt: float, ref_price: float) -> Optional[float]:
-            order_side = "Sell" if side == "S" else "Buy"
-            label = "SHORT" if side == "S" else "LONG"
+    def open_position(self, symbol: str, side: str, notional_usdt: float, ref_price: float,
+                   leverage: int, tp_pct_price: float, sl_pct_price: float) -> Optional[float]:
+    order_side = "Sell" if side == "S" else "Buy"
+    label = "SHORT" if side == "S" else "LONG"
 
-            raw_qty = notional_usdt / ref_price
-            qty = self.round_qty(symbol, raw_qty)
-            if qty <= 0:
-                log.error("계산된 수량이 0 이하입니다: %s", symbol)
-                return None
+    raw_qty = notional_usdt / ref_price
+    qty = self.round_qty(symbol, raw_qty)
+    if qty <= 0:
+        log.error("계산된 수량이 0 이하입니다: %s", symbol)
+        return None
 
-            tp_price_pct = TAKE_PROFIT_PCT / LEVERAGE
-
-            if side == "S":
-                take_profit = ref_price * (1 - tp_price_pct)
-                stop_loss = ref_price * (1 + STOP_LOSS_PCT)
-            else:
-                take_profit = ref_price * (1 + tp_price_pct)
-                stop_loss = ref_price * (1 - STOP_LOSS_PCT)
-            self.set_leverage(symbol)
-            self.ensure_one_way_mode(symbol)
-            order = self.session.place_order(
-                category=CATEGORY, symbol=symbol, side=order_side, orderType="Market",
-                qty=str(qty), positionIdx=0, reduceOnly=False,
-                takeProfit=str(round(take_profit, 6)),
-                stopLoss=str(round(stop_loss, 6)),
-            )
+    if side == "S":
+        take_profit = ref_price * (1 - tp_pct_price)
+        stop_loss = ref_price * (1 + sl_pct_price)
+    else:
+        take_profit = ref_price *
             log.info(
                 "%s OPEN 주문 전송: %s qty=%s TP=%.4f SL=%.4f -> %s",
                 label, symbol, qty, take_profit, stop_loss, order.get("retMsg"),
@@ -324,7 +319,19 @@ def handle_alert(payload: dict) -> None:
         if not ref_price:
             ref_price = _executor.get_mark_price(symbol)
 
-        qty = _executor.open_position(symbol, side, POSITION_NOTIONAL_USDT, ref_price)
+        is_whalehunter = payload.get("source") == "whalehunter"
+        if is_whalehunter:
+            notional = WHALEHUNTER_NOTIONAL_USDT
+            leverage = WHALEHUNTER_LEVERAGE
+            tp_pct = WHALEHUNTER_TP_PCT
+            sl_pct = WHALEHUNTER_SL_PCT
+        else:
+            notional = POSITION_NOTIONAL_USDT
+            leverage = LEVERAGE
+            tp_pct = TAKE_PROFIT_PCT / LEVERAGE
+            sl_pct = STOP_LOSS_PCT
+
+        qty = _executor.open_position(symbol, side, notional, ref_price, leverage, tp_pct, sl_pct)
         if qty:
             positions[symbol] = {"side": side, "qty": qty, "entry": ref_price}
             save_state(_state)
@@ -397,6 +404,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if payload.get("source") == "whalehunter":
+            payload["_source"] = "whalehunter"
+          
         if payload.get("secret") != WEBHOOK_SECRET:
             log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
             body = b'{"error":"unauthorized"}'
