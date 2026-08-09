@@ -75,7 +75,7 @@ LEVERAGE = 10
 TAKE_PROFIT_PCT = 0.10   # 익절: 증거금 대비 수익률 +10% (레버리지 반영해서 자동 계산)
 STOP_LOSS_PCT = 0.007    # 손절: 진입가 대비 -0.7% (증거금 기준 10배 레버리지 시 -7%)
 # 웨일헌터 전용 설정 (실제 가격 변동률 기준 %)
-WHALEHUNTER_NOTIONAL_USDT = 100.0
+WHALEHUNTER_NOTIONAL_USDT = 300.0
 WHALEHUNTER_LEVERAGE = 3
 WHALEHUNTER_TP_PCT = 0.10
 WHALEHUNTER_SL_PCT = 0.05
