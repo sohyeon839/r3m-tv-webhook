@@ -237,25 +237,25 @@ class BybitExecutor:
 
     def open_position(self, symbol: str, side: str, notional_usdt: float, ref_price: float,
                        leverage: int, tp_pct_price: float, sl_pct_price: float) -> Optional[float]:
-            order_side = "Sell" if side == "S" else "Buy"
-            label = "SHORT" if side == "S" else "LONG"
-    
-            raw_qty = notional_usdt / ref_price
-            qty = self.round_qty(symbol, raw_qty)
-            if qty <= 0:
-                log.error("계산된 수량이 0 이하입니다: %s", symbol)
-                return None
-    
-            if side == "S":
-                take_profit = ref_price * (1 - tp_pct_price)
-                stop_loss = ref_price * (1 + sl_pct_price)
-            else:
-                take_profit = ref_price * (1 + tp_pct_price)
-                stop_loss = ref_price * (1 - sl_pct_price)
-    
-            self.set_leverage(symbol, leverage)
-            self.ensure_one_way_mode(symbol)
-            order = self.session.place_order(
+        order_side = "Sell" if side == "S" else "Buy"
+        label = "SHORT" if side == "S" else "LONG"
+
+        raw_qty = notional_usdt / ref_price
+        qty = self.round_qty(symbol, raw_qty)
+        if qty <= 0:
+            log.error("계산된 수량이 0 이하입니다: %s", symbol)
+            return None
+
+        if side == "S":
+            take_profit = ref_price * (1 - tp_pct_price)
+            stop_loss = ref_price * (1 + sl_pct_price)
+        else:
+            take_profit = ref_price * (1 + tp_pct_price)
+            stop_loss = ref_price * (1 - sl_pct_price)
+
+        self.set_leverage(symbol, leverage)
+        self.ensure_one_way_mode(symbol)
+        order = self.session.place_order(
             category=CATEGORY, symbol=symbol, side=order_side, orderType="Market",
             qty=str(qty), positionIdx=0, reduceOnly=False,
             takeProfit=str(round(take_profit, 6)),
