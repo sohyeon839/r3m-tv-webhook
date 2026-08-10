@@ -153,23 +153,26 @@ def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def normalize_symbol(sym: str) -> str:
-    sym = (sym or "").upper().strip()
-    if not sym.endswith("USDT"):
-        sym += "USDT"
-    return sym
-def parse_panterra_text(text: str) -> Optional[dict]:
-    m = re.search(r"종목\s*[:：]\s*[A-Z]*:?([A-Z0-9]+?)(?:\.P)?\s", text)
-    if not m:
+def extract_json_block(text: str) -> Optional[str]:
+    """
+    문자열 안에서 제일 처음 나오는 '{' 부터, 그것과 짝이 맞는 '}' 까지를
+    정확히 찾아서 돌려줍니다. "{{ticker}}" 처럼 중괄호가 중첩된 경우에도
+    괄호 개수를 세어가며 짝을 맞추기 때문에 안전합니다.
+    짝이 맞는 '}'를 못 찾으면 None을 돌려줍니다.
+    """
+    start = text.find("{")
+    if start == -1:
         return None
-    symbol = m.group(1)
-
-    if "매수" in text:
-        side = "long"
-    elif "매도" in text:
-        side = "short"
-    else:
-        return None
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
 
     return {"secret": WEBHOOK_SECRET, "symbol": symbol, "side": side, "action": "entry"}
 
@@ -328,7 +331,7 @@ def handle_alert(payload: dict) -> None:
         if not ref_price:
             ref_price = _executor.get_mark_price(symbol)
 
-        is_whalehunter = payload.get("source") == "whalehunter"
+        is_whalehunter = payload.get("source") in ("whalehunter", "blue_beam")
         if is_whalehunter:
             notional = WHALEHUNTER_NOTIONAL_USDT
             leverage = WHALEHUNTER_LEVERAGE
@@ -400,7 +403,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
         try:
             raw_text = raw.decode("utf-8", errors="ignore")
             try:
-                payload = json.loads(raw_text)
+                json_block = extract_json_block(raw_text)
+                if json_block:
+                    payload = json.loads(json_block)
+                else:
+                    payload = parse_panterra_text(raw_text)
+                    if payload is None:
+                        raise ValueError("파싱 실패")
             except Exception:  # noqa: BLE001
                 payload = parse_panterra_text(raw_text)
                 if payload is None:
@@ -413,15 +422,17 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if payload.get("source") != "whalehunter":
-            log.info("웨일헌터 신호가 아니라서 스킵: %s", raw_text[:100])
-            body = b'{"ok":true,"skipped":"not whalehunter"}'
+        is_whalehunter_signal = payload.get("source") == "whalehunter"
+        is_blue_beam_signal = "파랑빔" in raw_text
+
+        if not is_whalehunter_signal and not is_blue_beam_signal:
+            log.info("웨일헌터/파랑빔 신호가 아니라서 스킵: %s", raw_text[:100])
+            body = b'{"ok":true,"skipped":"not allowed signal"}'
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
-          
         if payload.get("secret") != WEBHOOK_SECRET:
             log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
             body = b'{"error":"unauthorized"}'
@@ -429,9 +440,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-            return
-
-        try:
+            return  
+        if is_blue_beam_signal and not is_whalehunter_signal:
+            payload["source"] = "blue_beam"
+          
+          try:
             handle_alert(payload)
             body = b'{"ok":true}'
             self.send_response(200)
