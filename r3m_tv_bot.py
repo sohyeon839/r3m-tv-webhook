@@ -444,7 +444,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if is_blue_beam_signal and not is_whalehunter_signal:
             payload["source"] = "blue_beam"
           
-          try:
+        try:
             handle_alert(payload)
             body = b'{"ok":true}'
             self.send_response(200)
