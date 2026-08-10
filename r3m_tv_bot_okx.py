@@ -470,8 +470,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
         raw_upper = raw_text.upper()
         is_square = "스퀘어" in raw_text or "SQUARE" in raw_upper
         is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
-        if not is_square and not is_panterra:
-            log.info("스퀘어/판테라 신호가 아니라서 진입 스킵: %s", raw_text[:100])
+        is_blue_beam = "파랑빔" in raw_text
+        if not is_square and not is_panterra and not is_blue_beam:
+            log.info("스퀘어/판테라/파랑빔 신호가 아니라서 진입 스킵: %s", raw_text[:100])
             body = b'{"ok":true,"skipped":"not allowed signal"}'
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
