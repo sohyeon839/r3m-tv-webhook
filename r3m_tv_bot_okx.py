@@ -382,11 +382,10 @@ def handle_alert(payload: dict) -> None:
     positions: dict = _state.setdefault("positions", {})
 
     entries = positions.setdefault(inst_id, [])
-        if len(entries) >= MAX_STACK_POSITIONS:
-            log.info("%s 이미 %d개까지 중복 진입되어 추가 진입 스킵", inst_id, MAX_STACK_POSITIONS)
-            return
-
-        ref_price = None
+    if len(entries) >= MAX_STACK_POSITIONS:
+        log.info("%s 이미 %d개까지 중복 진입되어 추가 진입 스킵", inst_id, MAX_STACK_POSITIONS)
+        return
+    ref_price = None
         try:
             if payload.get("price"):
                 ref_price = float(payload["price"])
