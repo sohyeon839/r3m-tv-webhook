@@ -254,10 +254,10 @@ class OkxExecutor:
 
         tp_price_pct = tp_margin_pct / leverage
         sl_price_pct = sl_margin_pct / leverage
-    if side == "S":
+        if side == "S":
         tp_price = ref_price * (1 - tp_price_pct)
         sl_price = ref_price * (1 + sl_price_pct)
-    else:
+        else:
         tp_price = ref_price * (1 + tp_price_pct)
         sl_price = ref_price * (1 - sl_price_pct)
 
@@ -381,12 +381,16 @@ def handle_alert(payload: dict) -> None:
 
     positions: dict = _state.setdefault("positions", {})
 
-    entries = positions.setdefault(inst_id, [])
-    if len(entries) >= MAX_STACK_POSITIONS:
-        log.info("%s 이미 %d개까지 중복 진입되어 추가 진입 스킵", inst_id, MAX_STACK_POSITIONS)
-        return
-    ref_price = None
-    try:
+    positions: dict = _state.setdefault("positions", {})
+
+    if action == "entry":
+        entries = positions.setdefault(inst_id, [])
+        if len(entries) >= MAX_STACK_POSITIONS:
+            log.info("%s 이미 %d개까지 중복 진입되어 추가 진입 스킵", inst_id, MAX_STACK_POSITIONS)
+            return
+
+        ref_price = None
+        try:
             if payload.get("price"):
                 ref_price = float(payload["price"])
         except (TypeError, ValueError):
@@ -395,7 +399,7 @@ def handle_alert(payload: dict) -> None:
         if not ref_price:
             ref_price = _executor.get_mark_price(inst_id)
 
-        is_blue_beam_entry = "파랑빔" in raw_text
+        is_blue_beam_entry = payload.get("_blue_beam", False)
         if is_blue_beam_entry:
             notional = BLUE_BEAM_NOTIONAL_USDT
             leverage = BLUE_BEAM_LEVERAGE
@@ -446,7 +450,6 @@ def handle_alert(payload: dict) -> None:
             )
         else:
             notify("✅ 포지션 청산 (OKX)", f"{label} 청산 완료\n📊 종목: {inst_id}")
-
 
 class WebhookHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
