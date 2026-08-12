@@ -413,11 +413,6 @@ _state: Optional[dict] = None
 _state_lock = threading.Lock()
 
 def handle_alert(payload: dict) -> None:
-    with _state_lock:
-        _handle_alert_locked(payload)
-
-
-def _handle_alert_locked(payload: dict) -> None:
     inst_id = normalize_symbol(payload.get("symbol", ""))
     side_raw = str(payload.get("side", "")).lower()
     action = str(payload.get("action", "entry")).lower()
@@ -426,16 +421,11 @@ def _handle_alert_locked(payload: dict) -> None:
     if not inst_id or action not in ("entry", "exit"):
         raise ValueError("symbol 또는 action 값이 올바르지 않습니다")
 
-    positions: dict = _state.setdefault("positions", {})
-
-    positions: dict = _state.setdefault("positions", {})
-
     if action == "entry":
-        if check_daily_sl_limit():
-            log.info("오늘 손절 한도(%d회) 도달로 신규 진입 스킵: %s", MAX_DAILY_SL_COUNT, inst_id)
-            return
-
-        entries = positions.setdefault(inst_id, [])
+        with _state_lock:
+            if check_daily_sl_limit():
+                log.info("오늘 손절 한도(%d회) 도달로 신규 진입 스킵: %s", MAX_DAILY_SL_COUNT, inst_id)
+                return
 
         ref_price = None
         try:
@@ -445,7 +435,7 @@ def _handle_alert_locked(payload: dict) -> None:
             ref_price = None
 
         if not ref_price:
-            ref_price = _executor.get_mark_price(inst_id)
+            ref_price = _executor.get_mark_price(inst_id)  # OKX API 호출 — 락 밖에서 실행
 
         is_blue_beam_entry = payload.get("_blue_beam", False)
         if is_blue_beam_entry:
@@ -459,10 +449,14 @@ def _handle_alert_locked(payload: dict) -> None:
             tp_margin_pct = TAKE_PROFIT_PCT
             sl_margin_pct = STOP_LOSS_PCT * LEVERAGE
 
+        # OKX 주문 전송 — 락을 잡지 않은 채로 실행되어 다른 종목 웹훅과 동시 처리 가능
         qty = _executor.open_position(inst_id, side, notional, ref_price, leverage, tp_margin_pct, sl_margin_pct)
         if qty:
-            entries.append({"side": side, "qty": qty, "entry": ref_price})
-            save_state(_state)
+            with _state_lock:
+                positions: dict = _state.setdefault("positions", {})
+                entries = positions.setdefault(inst_id, [])
+                entries.append({"side": side, "qty": qty, "entry": ref_price})
+                save_state(_state)
             label = "🔴 숏" if side == "S" else "🟢 롱"
             notify(
                 "🚀 신규 진입 (OKX)",
@@ -476,14 +470,22 @@ def _handle_alert_locked(payload: dict) -> None:
             log.warning("%s 진입 실패", inst_id)
 
     else:  # exit
-        entries = positions.get(inst_id) or []
+        with _state_lock:
+            positions: dict = _state.setdefault("positions", {})
+            entries = positions.get(inst_id) or []
+            close_side = entries[0].get("side", "S") if entries else None
+
         if not entries:
             log.info("%s 추적 중인 포지션이 없어 청산 스킵", inst_id)
             return
-        close_side = entries[0].get("side", "S")
-        result = _executor.close_position(inst_id, close_side)
-        positions.pop(inst_id, None)
-        save_state(_state)
+
+        result = _executor.close_position(inst_id, close_side)  # OKX API 호출 — 락 밖에서 실행
+
+        with _state_lock:
+            positions: dict = _state.setdefault("positions", {})
+            positions.pop(inst_id, None)
+            save_state(_state)
+
         label = "🔴 숏" if close_side == "S" else "🟢 롱"
         if result:
             pnl = result["pnl"]
