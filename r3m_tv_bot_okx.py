@@ -511,7 +511,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-
+          
+        if is_blue_beam:
+            payload["_blue_beam"] = True
         try:
             handle_alert(payload)
             body = b'{"ok":true}'
