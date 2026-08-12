@@ -48,7 +48,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 
@@ -410,9 +410,14 @@ def sl_watch_loop():
 
 _executor: Optional[OkxExecutor] = None
 _state: Optional[dict] = None
-
+_state_lock = threading.Lock()
 
 def handle_alert(payload: dict) -> None:
+    with _state_lock:
+        _handle_alert_locked(payload)
+
+
+def _handle_alert_locked(payload: dict) -> None:
     inst_id = normalize_symbol(payload.get("symbol", ""))
     side_raw = str(payload.get("side", "")).lower()
     action = str(payload.get("action", "entry")).lower()
@@ -594,7 +599,8 @@ def main():
     )
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=sl_watch_loop, daemon=True).start()
-    server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
+    server.daemon_threads = True
     log.info("웹훅 서버 실행 중 -> 0.0.0.0:%s/webhook", WEBHOOK_PORT)
     server.serve_forever()
 
