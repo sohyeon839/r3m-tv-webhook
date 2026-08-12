@@ -386,7 +386,7 @@ def handle_alert(payload: dict) -> None:
         log.info("%s 이미 %d개까지 중복 진입되어 추가 진입 스킵", inst_id, MAX_STACK_POSITIONS)
         return
     ref_price = None
-        try:
+    try:
             if payload.get("price"):
                 ref_price = float(payload["price"])
         except (TypeError, ValueError):
