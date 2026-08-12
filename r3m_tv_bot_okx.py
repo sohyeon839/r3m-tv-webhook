@@ -65,6 +65,10 @@ LEVERAGE = 20
 TAKE_PROFIT_PCT = 0.07   # 익절: 증거금 대비 수익률 +0.7%
 STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5%
 
+# 파랑빔 전용 설정
+BLUE_BEAM_NOTIONAL_USDT = 100.0
+BLUE_BEAM_LEVERAGE = 10
+
 STATE_FILE = Path("r3m_tv_okx_state.json")
 OKX_BASE_URL = "https://www.okx.com"
 TD_MODE = "cross"  # 교차 마진. 격리 원하면 "isolated"
@@ -224,16 +228,16 @@ class OkxExecutor:
 
     # -- 계정/주문 ------------------------------------------------------------
 
-    def set_leverage(self, inst_id: str) -> None:
-        try:
-            self._request(
-                "POST", "/api/v5/account/set-leverage",
-                body={"instId": inst_id, "lever": str(LEVERAGE), "mgnMode": TD_MODE},
-            )
-        except Exception as e:  # noqa: BLE001
-            log.info("레버리지 설정 스킵/실패(무시): %s", e)
+    def set_leverage(self, inst_id: str, leverage: int) -> None:
+    try:
+        self._request(
+            "POST", "/api/v5/account/set-leverage",
+            body={"instId": inst_id, "lever": str(leverage), "mgnMode": TD_MODE},
+        )
+    except Exception as e:
+        log.info("레버리지 설정 스킵/실패(무시): %s", e)
 
-    def open_position(self, inst_id: str, side: str, notional_usdt: float, ref_price: float) -> Optional[float]:
+    def open_position(self, inst_id: str, side: str, notional_usdt: float, ref_price: float, leverage: int) -> Optional[float]:
         order_side = "sell" if side == "S" else "buy"
         label = "SHORT" if side == "S" else "LONG"
 
@@ -242,7 +246,7 @@ class OkxExecutor:
             log.error("계산된 수량이 0 이하입니다: %s", inst_id)
             return None
 
-        tp_price_pct = TAKE_PROFIT_PCT / LEVERAGE
+        tp_price_pct = TAKE_PROFIT_PCT / leverage
         if side == "S":
             tp_price = ref_price * (1 - tp_price_pct)
             sl_price = ref_price * (1 + STOP_LOSS_PCT)
@@ -250,7 +254,7 @@ class OkxExecutor:
             tp_price = ref_price * (1 + tp_price_pct)
             sl_price = ref_price * (1 - STOP_LOSS_PCT)
 
-        self.set_leverage(inst_id)
+        self.set_leverage(inst_id, leverage)
 
         body = {
             "instId": inst_id,
@@ -385,7 +389,15 @@ def handle_alert(payload: dict) -> None:
         if not ref_price:
             ref_price = _executor.get_mark_price(inst_id)
 
-        qty = _executor.open_position(inst_id, side, POSITION_NOTIONAL_USDT, ref_price)
+        is_blue_beam_entry = "파랑빔" in raw_text
+        if is_blue_beam_entry:
+            notional = BLUE_BEAM_NOTIONAL_USDT
+            leverage = BLUE_BEAM_LEVERAGE
+        else:
+            notional = POSITION_NOTIONAL_USDT
+            leverage = LEVERAGE
+
+        qty = _executor.open_position(inst_id, side, notional, ref_price, leverage)
         if qty:
             positions[inst_id] = {"side": side, "qty": qty, "entry": ref_price}
             save_state(_state)
@@ -479,7 +491,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-
+        if is_blue_beam:
+            payload["_blue_beam"] = True
         if payload.get("secret") != WEBHOOK_SECRET:
             log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
             body = b'{"error":"unauthorized"}'
