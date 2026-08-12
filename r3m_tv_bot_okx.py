@@ -255,11 +255,11 @@ class OkxExecutor:
         tp_price_pct = tp_margin_pct / leverage
         sl_price_pct = sl_margin_pct / leverage
         if side == "S":
-        tp_price = ref_price * (1 - tp_price_pct)
-        sl_price = ref_price * (1 + sl_price_pct)
+            tp_price = ref_price * (1 - tp_price_pct)
+            sl_price = ref_price * (1 + sl_price_pct)
         else:
-        tp_price = ref_price * (1 + tp_price_pct)
-        sl_price = ref_price * (1 - sl_price_pct)
+            tp_price = ref_price * (1 + tp_price_pct)
+            sl_price = ref_price * (1 - sl_price_pct)
 
         self.set_leverage(inst_id, leverage)
 
