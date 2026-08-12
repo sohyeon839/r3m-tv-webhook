@@ -69,6 +69,11 @@ STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5%
 BLUE_BEAM_NOTIONAL_USDT = 100.0
 BLUE_BEAM_LEVERAGE = 10
 
+MAX_STACK_POSITIONS = 4
+
+BLUE_BEAM_TP_PCT = 0.15   # 증거금 대비 +15% 익절
+BLUE_BEAM_SL_PCT = 0.10   # 증거금 대비 -10% 손절
+
 STATE_FILE = Path("r3m_tv_okx_state.json")
 OKX_BASE_URL = "https://www.okx.com"
 TD_MODE = "cross"  # 교차 마진. 격리 원하면 "isolated"
@@ -237,7 +242,8 @@ class OkxExecutor:
     except Exception as e:
         log.info("레버리지 설정 스킵/실패(무시): %s", e)
 
-    def open_position(self, inst_id: str, side: str, notional_usdt: float, ref_price: float, leverage: int) -> Optional[float]:
+    def open_position(self, inst_id: str, side: str, notional_usdt: float, ref_price: float,
+                   leverage: int, tp_margin_pct: float, sl_margin_pct: float) -> Optional[float]:
         order_side = "sell" if side == "S" else "buy"
         label = "SHORT" if side == "S" else "LONG"
 
@@ -246,13 +252,14 @@ class OkxExecutor:
             log.error("계산된 수량이 0 이하입니다: %s", inst_id)
             return None
 
-        tp_price_pct = TAKE_PROFIT_PCT / leverage
-        if side == "S":
-            tp_price = ref_price * (1 - tp_price_pct)
-            sl_price = ref_price * (1 + STOP_LOSS_PCT)
-        else:
-            tp_price = ref_price * (1 + tp_price_pct)
-            sl_price = ref_price * (1 - STOP_LOSS_PCT)
+        tp_price_pct = tp_margin_pct / leverage
+        sl_price_pct = sl_margin_pct / leverage
+    if side == "S":
+        tp_price = ref_price * (1 - tp_price_pct)
+        sl_price = ref_price * (1 + sl_price_pct)
+    else:
+        tp_price = ref_price * (1 + tp_price_pct)
+        sl_price = ref_price * (1 - sl_price_pct)
 
         self.set_leverage(inst_id, leverage)
 
@@ -374,9 +381,9 @@ def handle_alert(payload: dict) -> None:
 
     positions: dict = _state.setdefault("positions", {})
 
-    if action == "entry":
-        if inst_id in positions:
-            log.info("%s 이미 포지션 보유 중이라 진입 스킵", inst_id)
+    entries = positions.setdefault(inst_id, [])
+        if len(entries) >= MAX_STACK_POSITIONS:
+            log.info("%s 이미 %d개까지 중복 진입되어 추가 진입 스킵", inst_id, MAX_STACK_POSITIONS)
             return
 
         ref_price = None
@@ -393,13 +400,17 @@ def handle_alert(payload: dict) -> None:
         if is_blue_beam_entry:
             notional = BLUE_BEAM_NOTIONAL_USDT
             leverage = BLUE_BEAM_LEVERAGE
+            tp_margin_pct = BLUE_BEAM_TP_PCT
+            sl_margin_pct = BLUE_BEAM_SL_PCT
         else:
             notional = POSITION_NOTIONAL_USDT
             leverage = LEVERAGE
+            tp_margin_pct = TAKE_PROFIT_PCT
+            sl_margin_pct = STOP_LOSS_PCT * LEVERAGE
 
-        qty = _executor.open_position(inst_id, side, notional, ref_price, leverage)
+        qty = _executor.open_position(inst_id, side, notional, ref_price, leverage, tp_margin_pct, sl_margin_pct)
         if qty:
-            positions[inst_id] = {"side": side, "qty": qty, "entry": ref_price}
+            entries.append({"side": side, "qty": qty, "entry": ref_price})
             save_state(_state)
             label = "🔴 숏" if side == "S" else "🟢 롱"
             notify(
@@ -414,11 +425,11 @@ def handle_alert(payload: dict) -> None:
             log.warning("%s 진입 실패", inst_id)
 
     else:  # exit
-        pos = positions.get(inst_id)
-        if not pos:
+        entries = positions.get(inst_id) or []
+        if not entries:
             log.info("%s 추적 중인 포지션이 없어 청산 스킵", inst_id)
             return
-        close_side = pos.get("side", "S")
+        close_side = entries[0].get("side", "S")
         result = _executor.close_position(inst_id, close_side)
         positions.pop(inst_id, None)
         save_state(_state)
