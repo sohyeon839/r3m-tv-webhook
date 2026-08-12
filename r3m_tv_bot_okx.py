@@ -234,13 +234,13 @@ class OkxExecutor:
     # -- 계정/주문 ------------------------------------------------------------
 
     def set_leverage(self, inst_id: str, leverage: int) -> None:
-    try:
-        self._request(
-            "POST", "/api/v5/account/set-leverage",
-            body={"instId": inst_id, "lever": str(leverage), "mgnMode": TD_MODE},
-        )
-    except Exception as e:
-        log.info("레버리지 설정 스킵/실패(무시): %s", e)
+        try:
+            self._request(
+                "POST", "/api/v5/account/set-leverage",
+                body={"instId": inst_id, "lever": str(leverage), "mgnMode": TD_MODE},
+            )
+        except Exception as e:
+            log.info("레버리지 설정 스킵/실패(무시): %s", e)
 
     def open_position(self, inst_id: str, side: str, notional_usdt: float, ref_price: float,
                    leverage: int, tp_margin_pct: float, sl_margin_pct: float) -> Optional[float]:
