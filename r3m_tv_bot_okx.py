@@ -71,6 +71,7 @@ BLUE_BEAM_LEVERAGE = 10
 
 MAX_STACK_POSITIONS = 4
 
+MAX_DAILY_SL_COUNT = 5   # 하루 손절 5회 넘으면 신규 진입 중지
 BLUE_BEAM_TP_PCT = 0.15   # 증거금 대비 +15% 익절
 BLUE_BEAM_SL_PCT = 0.10   # 증거금 대비 -10% 손절
 
@@ -110,7 +111,26 @@ def load_state() -> dict:
 def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
+def check_daily_sl_limit() -> bool:
+    """오늘 손절 횟수가 한도를 넘었으면 True(진입 중지)를 돌려줍니다."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily = _state.setdefault("daily_sl", {"date": today, "count": 0})
+    if daily.get("date") != today:
+        daily["date"] = today
+        daily["count"] = 0
+        save_state(_state)
+    return daily.get("count", 0) >= MAX_DAILY_SL_COUNT
 
+
+def record_sl_hit() -> None:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily = _state.setdefault("daily_sl", {"date": today, "count": 0})
+    if daily.get("date") != today:
+        daily["date"] = today
+        daily["count"] = 0
+    daily["count"] += 1
+    save_state(_state)
+    log.warning("오늘 손절 %d회째 발생 (한도 %d회)", daily["count"], MAX_DAILY_SL_COUNT)
 def normalize_symbol(sym: str) -> str:
     """'BTCUSDT', 'BTCUSDT.P', 'BTC-USDT-SWAP' 등을 'BTC-USDT-SWAP'으로 통일."""
     sym = (sym or "").upper().strip()
@@ -361,7 +381,29 @@ def heartbeat_loop():
         except Exception as e:  # noqa: BLE001
             log.warning("하트비트 알림 실패: %s", e)
 
+def sl_watch_loop():
+    while True:
+        time.sleep(120)  # 2분마다 확인
+        try:
+            positions_state: dict = _state.setdefault("positions", {})
+            open_positions = _executor.get_open_positions()
+            open_inst_ids = {p["instId"] for p in open_positions}
 
+            for inst_id in list(positions_state.keys()):
+                if positions_state[inst_id] and inst_id not in open_inst_ids:
+                    hist = _executor._request(
+                        "GET", "/api/v5/account/positions-history",
+                        params={"instId": inst_id, "limit": "1"},
+                    )
+                    rows = hist.get("data", [])
+                    if rows:
+                        pnl = float(rows[0].get("pnl", 0) or 0)
+                        if pnl < 0:
+                            record_sl_hit()
+                    positions_state[inst_id] = []
+                    save_state(_state)
+        except Exception as e:  # noqa: BLE001
+            log.warning("손절 감시 루프 오류: %s", e)
 # ----------------------------------------------------------------------------
 # 웹훅 처리
 # ----------------------------------------------------------------------------
@@ -384,10 +426,11 @@ def handle_alert(payload: dict) -> None:
     positions: dict = _state.setdefault("positions", {})
 
     if action == "entry":
-        entries = positions.setdefault(inst_id, [])
-        if len(entries) >= MAX_STACK_POSITIONS:
-            log.info("%s 이미 %d개까지 중복 진입되어 추가 진입 스킵", inst_id, MAX_STACK_POSITIONS)
+        if check_daily_sl_limit():
+            log.info("오늘 손절 한도(%d회) 도달로 신규 진입 스킵: %s", MAX_DAILY_SL_COUNT, inst_id)
             return
+
+        entries = positions.setdefault(inst_id, [])
 
         ref_price = None
         try:
@@ -550,6 +593,7 @@ def main():
         POSITION_NOTIONAL_USDT, LEVERAGE, WEBHOOK_PORT,
     )
     threading.Thread(target=heartbeat_loop, daemon=True).start()
+    threading.Thread(target=sl_watch_loop, daemon=True).start()
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
     log.info("웹훅 서버 실행 중 -> 0.0.0.0:%s/webhook", WEBHOOK_PORT)
     server.serve_forever()
