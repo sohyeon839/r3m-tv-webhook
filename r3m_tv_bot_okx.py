@@ -385,21 +385,29 @@ def sl_watch_loop():
     while True:
         time.sleep(120)  # 2분마다 확인
         try:
-            positions_state: dict = _state.setdefault("positions", {})
             open_positions = _executor.get_open_positions()
             open_inst_ids = {p["instId"] for p in open_positions}
 
-            for inst_id in list(positions_state.keys()):
-                if positions_state[inst_id] and inst_id not in open_inst_ids:
-                    hist = _executor._request(
-                        "GET", "/api/v5/account/positions-history",
-                        params={"instId": inst_id, "limit": "1"},
-                    )
-                    rows = hist.get("data", [])
-                    if rows:
-                        pnl = float(rows[0].get("pnl", 0) or 0)
-                        if pnl < 0:
-                            record_sl_hit()
+            with _state_lock:
+                positions_state: dict = _state.setdefault("positions", {})
+                closed_inst_ids = [
+                    inst_id for inst_id in list(positions_state.keys())
+                    if positions_state[inst_id] and inst_id not in open_inst_ids
+                ]
+
+            # OKX API 호출은 락 밖에서 실행 — 네트워크 지연이 웹훅 처리를 막지 않도록 함
+            for inst_id in closed_inst_ids:
+                hist = _executor._request(
+                    "GET", "/api/v5/account/positions-history",
+                    params={"instId": inst_id, "limit": "1"},
+                )
+                rows = hist.get("data", [])
+                pnl = float(rows[0].get("pnl", 0) or 0) if rows else 0.0
+
+                with _state_lock:
+                    if pnl < 0:
+                        record_sl_hit()
+                    positions_state = _state.setdefault("positions", {})
                     positions_state[inst_id] = []
                     save_state(_state)
         except Exception as e:  # noqa: BLE001
