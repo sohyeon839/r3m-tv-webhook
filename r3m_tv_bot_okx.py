@@ -582,7 +582,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
-
+class WebhookServer(ThreadingHTTPServer):
+    # 기본값 5는 알림이 한꺼번에 몰릴 때 초과 연결을 즉시 거부(502의 원인)하므로 넉넉하게 늘림
+    request_queue_size = 128
+    daemon_threads = True
+    allow_reuse_address = True
+  
 def main():
     global _executor, _state
 
@@ -601,8 +606,7 @@ def main():
     )
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=sl_watch_loop, daemon=True).start()
-    server = ThreadingHTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
-    server.daemon_threads = True
+    server = WebhookServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
     log.info("웹훅 서버 실행 중 -> 0.0.0.0:%s/webhook", WEBHOOK_PORT)
     server.serve_forever()
 
