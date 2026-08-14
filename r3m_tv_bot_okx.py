@@ -68,6 +68,12 @@ STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5%
 # 파랑빔 전용 설정
 BLUE_BEAM_NOTIONAL_USDT = 1200.0
 BLUE_BEAM_LEVERAGE = 10
+# (여기 값은 "포지션 규모" 기준이라, 실제 증거금 300 USDT를 원하면 300 × 레버리지(10) = 3000으로 설정)
+SYMBOL_NOTIONAL_OVERRIDE = {
+    "BTC-USDT-SWAP": 3000.0,  # 실제 증거금 = 3000 / 10 = 300 USDT
+    "ETH-USDT-SWAP": 3000.0,  # 실제 증거금 = 3000 / 10 = 300 USDT
+}
+}
 
 MAX_STACK_POSITIONS = 4
 
@@ -451,6 +457,9 @@ def handle_alert(payload: dict) -> None:
             leverage = BLUE_BEAM_LEVERAGE
             tp_margin_pct = BLUE_BEAM_TP_PCT
             sl_margin_pct = BLUE_BEAM_SL_PCT
+            # BTC/ETH는 파랑빔 진입 시 증거금을 별도 지정된 값으로 사용
+            if inst_id in SYMBOL_NOTIONAL_OVERRIDE:
+                notional = SYMBOL_NOTIONAL_OVERRIDE[inst_id]
         else:
             notional = POSITION_NOTIONAL_USDT
             leverage = LEVERAGE
