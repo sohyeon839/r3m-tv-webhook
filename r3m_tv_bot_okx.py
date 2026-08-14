@@ -562,20 +562,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
         is_square = "스퀘어" in raw_text or "SQUARE" in raw_upper
         is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
         is_blue_beam = "파랑빔" in raw_text
-        if not is_square and not is_panterra and not is_blue_beam:
-            log.info("스퀘어/판테라/파랑빔 신호가 아니라서 진입 스킵: %s", raw_text[:100])
+        is_cluster_resistance = "클러스터" in raw_text and "저항" in raw_text
+        is_cluster_support = "클러스터" in raw_text and "지지" in raw_text
+        is_cluster = is_cluster_resistance or is_cluster_support
+
+        # 클러스터 신호는 "저항/지지"라는 단어만으로 방향이 정해지므로 명시적으로 지정
+        if is_cluster_resistance:
+            payload["side"] = "short"
+        elif is_cluster_support:
+            payload["side"] = "long"
+
+        if not is_square and not is_panterra and not is_blue_beam and not is_cluster:
+            log.info("스퀘어/판테라/파랑빔/클러스터 신호가 아니라서 진입 스킵: %s", raw_text[:100])
             body = b'{"ok":true,"skipped":"not allowed signal"}'
             self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if is_blue_beam:
-            payload["_blue_beam"] = True
-        if payload.get("secret") != WEBHOOK_SECRET:
-            log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
-            body = b'{"error":"unauthorized"}'
-            self.send_response(401)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
