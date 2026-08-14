@@ -73,7 +73,6 @@ SYMBOL_NOTIONAL_OVERRIDE = {
     "BTC-USDT-SWAP": 3000.0,  # 실제 증거금 = 3000 / 10 = 300 USDT
     "ETH-USDT-SWAP": 3000.0,  # 실제 증거금 = 3000 / 10 = 300 USDT
 }
-}
 
 MAX_STACK_POSITIONS = 4
 
