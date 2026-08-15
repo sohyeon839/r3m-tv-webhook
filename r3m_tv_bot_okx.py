@@ -510,7 +510,7 @@ def handle_alert(payload: dict) -> None:
                 f"━━━━━━━━━━\n"
                 f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
             )
-            )
+            
         else:
             log.warning("%s 진입 실패", inst_id)
 
