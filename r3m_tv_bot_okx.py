@@ -136,6 +136,21 @@ def record_sl_hit() -> None:
     daily["count"] += 1
     save_state(_state)
     log.warning("오늘 손절 %d회째 발생 (한도 %d회)", daily["count"], MAX_DAILY_SL_COUNT)
+
+def record_trade_result(success: bool) -> dict:
+    """진입 성공/실패를 오늘 날짜 기준으로 누적 기록하고, 최신 카운트를 반환합니다."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    stats = _state.setdefault("daily_trade_stats", {"date": today, "success": 0, "fail": 0})
+    if stats.get("date") != today:
+        stats["date"] = today
+        stats["success"] = 0
+        stats["fail"] = 0
+    if success:
+        stats["success"] += 1
+    else:
+        stats["fail"] += 1
+    save_state(_state)
+    return stats
 def normalize_symbol(sym: str) -> str:
     """'BTCUSDT', 'BTCUSDT.P', 'BTC-USDT-SWAP' 등을 'BTC-USDT-SWAP'으로 통일."""
     sym = (sym or "").upper().strip()
@@ -473,6 +488,7 @@ def handle_alert(payload: dict) -> None:
                 entries = positions.setdefault(inst_id, [])
                 entries.append({"side": side, "qty": qty, "entry": ref_price})
                 save_state(_state)
+                stats = record_trade_result(True)
             label = "🔴 숏" if side == "S" else "🟢 롱"
             notify(
                 "🚀 신규 진입 (OKX)",
@@ -480,7 +496,20 @@ def handle_alert(payload: dict) -> None:
                 f"━━━━━━━━━━\n"
                 f"📊 종목: {inst_id}\n"
                 f"📦 수량: {qty}\n"
-                f"💰 진입가: {ref_price}"
+                f"💰 진입가: {ref_price}\n"
+                f"━━━━━━━━━━\n"
+                f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
+            )
+        else:
+            with _state_lock:
+                stats = record_trade_result(False)
+            log.warning("%s 진입 실패", inst_id)
+            notify(
+                "⚠️ 진입 실패 (OKX)",
+                f"📊 종목: {inst_id}\n"
+                f"━━━━━━━━━━\n"
+                f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
+            )
             )
         else:
             log.warning("%s 진입 실패", inst_id)
