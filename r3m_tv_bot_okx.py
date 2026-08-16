@@ -151,6 +151,21 @@ def record_trade_result(success: bool) -> dict:
         stats["fail"] += 1
     save_state(_state)
     return stats
+
+def record_win_loss(is_win: bool) -> dict:
+    """청산 결과(익절/손절)를 오늘 날짜 기준으로 누적 기록하고, 최신 카운트를 반환합니다."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    stats = _state.setdefault("daily_win_loss", {"date": today, "win": 0, "loss": 0})
+    if stats.get("date") != today:
+        stats["date"] = today
+        stats["win"] = 0
+        stats["loss"] = 0
+    if is_win:
+        stats["win"] += 1
+    else:
+        stats["loss"] += 1
+    save_state(_state)
+    return stats
 def normalize_symbol(sym: str) -> str:
     """'BTCUSDT', 'BTCUSDT.P', 'BTC-USDT-SWAP' 등을 'BTC-USDT-SWAP'으로 통일."""
     sym = (sym or "").upper().strip()
@@ -423,13 +438,25 @@ def sl_watch_loop():
                 )
                 rows = hist.get("data", [])
                 pnl = float(rows[0].get("pnl", 0) or 0) if rows else 0.0
+                is_win = pnl >= 0
 
                 with _state_lock:
-                    if pnl < 0:
+                    if not is_win:
                         record_sl_hit()
+                    win_loss_stats = record_win_loss(is_win)
                     positions_state = _state.setdefault("positions", {})
                     positions_state[inst_id] = []
                     save_state(_state)
+
+                emoji = "✅ 익절" if is_win else "🛑 손절"
+                sign = "+" if pnl >= 0 else ""
+                notify(
+                    f"{emoji} (OKX)",
+                    f"📊 종목: {inst_id}\n"
+                    f"💰 손익: {sign}{pnl:.2f} USDT\n"
+                    f"━━━━━━━━━━\n"
+                    f"📈 오늘 승: {win_loss_stats['win']}회 / 패: {win_loss_stats['loss']}회"
+                )
         except Exception as e:  # noqa: BLE001
             log.warning("손절 감시 루프 오류: %s", e)
 # ----------------------------------------------------------------------------
