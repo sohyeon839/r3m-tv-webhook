@@ -455,6 +455,14 @@ def handle_alert(payload: dict) -> None:
                 log.info("오늘 손절 한도(%d회) 도달로 신규 진입 스킵: %s", MAX_DAILY_SL_COUNT, inst_id)
                 return
 
+            # 종목별 최대 스태킹 개수 확인 (예: BTC는 이미 포지션이 있으면 추가 진입 안 함)
+            max_stack = SYMBOL_MAX_STACK_OVERRIDE.get(inst_id, MAX_STACK_POSITIONS)
+            positions: dict = _state.setdefault("positions", {})
+            existing_count = len(positions.get(inst_id, []))
+            if existing_count >= max_stack:
+                log.info("%s 이미 포지션 %d개 보유 중(한도 %d개)이라 진입 스킵", inst_id, existing_count, max_stack)
+                return
+
         ref_price = None
         try:
             if payload.get("price"):
@@ -588,6 +596,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         is_square = "스퀘어" in raw_text or "SQUARE" in raw_upper
         is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
         is_blue_beam = "파랑빔" in raw_text
+        is_yellow_beam = "노랑빔" in raw_text
         is_cluster_resistance = "클러스터" in raw_text and "저항" in raw_text
         is_cluster_support = "클러스터" in raw_text and "지지" in raw_text
         is_cluster = is_cluster_resistance or is_cluster_support
@@ -598,10 +607,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
         elif is_cluster_support:
             payload["side"] = "long"
 
-        if not is_square and not is_panterra and not is_blue_beam and not is_cluster:
-            log.info("스퀘어/판테라/파랑빔/클러스터 신호가 아니라서 진입 스킵: %s", raw_text[:100])
+        if not is_square and not is_panterra and not is_blue_beam and not is_yellow_beam and not is_cluster:
+            log.info("스퀘어/판테라/파랑빔/노랑빔/클러스터 신호가 아니라서 진입 스킵: %s", raw_text[:100])
             body = b'{"ok":true,"skipped":"not allowed signal"}'
             self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if is_blue_beam or is_yellow_beam:
+            payload["_blue_beam"] = True  # 노랑빔도 파랑빔과 동일한 포지션 설정을 사용
+        if payload.get("secret") != WEBHOOK_SECRET:
+            log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
+            body = b'{"error":"unauthorized"}'
+            self.send_response(401)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
