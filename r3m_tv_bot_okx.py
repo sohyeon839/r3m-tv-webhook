@@ -62,11 +62,11 @@ WEBHOOK_PORT = int(os.environ.get("PORT", 8789))
 WEBHOOK_SECRET = "0413"   # 반드시 본인만 아는 값으로 바꾸세요
 POSITION_NOTIONAL_USDT = 3000.0
 LEVERAGE = 20
-TAKE_PROFIT_PCT = 0.07   # 익절: 증거금 대비 수익률 +0.7%
+TAKE_PROFIT_PCT = 0.09   # 익절: 증거금 대비 수익률 +0.7%
 STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5%
 
 # 파랑빔 전용 설정
-BLUE_BEAM_NOTIONAL_USDT = 1200.0
+BLUE_BEAM_NOTIONAL_USDT = 1500.0
 BLUE_BEAM_LEVERAGE = 10
 # (여기 값은 "포지션 규모" 기준이라, 실제 증거금 300 USDT를 원하면 300 × 레버리지(10) = 3000으로 설정)
 SYMBOL_NOTIONAL_OVERRIDE = {
@@ -74,12 +74,10 @@ SYMBOL_NOTIONAL_OVERRIDE = {
     "ETH-USDT-SWAP": 3000.0,  # 실제 증거금 = 3000 / 10 = 300 USDT
 }
 
-MAX_STACK_POSITIONS = 4
+MAX_STACK_POSITIONS = 1  # 모든 종목 공통: 이미 포지션이 있으면 같은 신호가 여러 번 울려도 추가 진입 안 함
 
-# 특정 종목은 이미 포지션이 있으면 신규 진입을 막음 (같은 방향 신호가 여러 번 울려도 1개만 유지)
-SYMBOL_MAX_STACK_OVERRIDE = {
-    "BTC-USDT-SWAP": 1,
-}
+# 특정 종목만 다른 한도를 쓰고 싶을 때만 여기에 추가 (지금은 기본값 1을 모든 종목에 적용 중)
+SYMBOL_MAX_STACK_OVERRIDE = {}
 
 MAX_DAILY_SL_COUNT = 5   # 하루 손절 5회 넘으면 신규 진입 중지
 BLUE_BEAM_TP_PCT = 0.15   # 증거금 대비 +15% 익절
