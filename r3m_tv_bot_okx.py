@@ -76,6 +76,11 @@ SYMBOL_NOTIONAL_OVERRIDE = {
 
 MAX_STACK_POSITIONS = 4
 
+# 특정 종목은 이미 포지션이 있으면 신규 진입을 막음 (같은 방향 신호가 여러 번 울려도 1개만 유지)
+SYMBOL_MAX_STACK_OVERRIDE = {
+    "BTC-USDT-SWAP": 1,
+}
+
 MAX_DAILY_SL_COUNT = 5   # 하루 손절 5회 넘으면 신규 진입 중지
 BLUE_BEAM_TP_PCT = 0.15   # 증거금 대비 +15% 익절
 BLUE_BEAM_SL_PCT = 0.10   # 증거금 대비 -10% 손절
