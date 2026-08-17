@@ -547,7 +547,7 @@ def handle_alert(payload: dict) -> None:
                 f"━━━━━━━━━━\n"
                 f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
             )
-                else:
+        else:
             with _state_lock:
                 # 진입 실패했으니 예약해뒀던 자리를 제거 (다음 신호가 다시 시도할 수 있도록)
                 positions: dict = _state.setdefault("positions", {})
