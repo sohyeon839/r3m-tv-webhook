@@ -485,13 +485,21 @@ def handle_alert(payload: dict) -> None:
                 log.info("오늘 손절 한도(%d회) 도달로 신규 진입 스킵: %s", MAX_DAILY_SL_COUNT, inst_id)
                 return
 
-            # 종목별 최대 스태킹 개수 확인 (예: BTC는 이미 포지션이 있으면 추가 진입 안 함)
+                        # 종목별 최대 스태킹 개수 확인 (예: BTC는 이미 포지션이 있으면 추가 진입 안 함)
             max_stack = SYMBOL_MAX_STACK_OVERRIDE.get(inst_id, MAX_STACK_POSITIONS)
             positions: dict = _state.setdefault("positions", {})
             existing_count = len(positions.get(inst_id, []))
             if existing_count >= max_stack:
                 log.info("%s 이미 포지션 %d개 보유 중(한도 %d개)이라 진입 스킵", inst_id, existing_count, max_stack)
                 return
+
+            # 자리 예약: 같은 종목 신호가 거의 동시에 여러 번 와도 뒤에 온 요청이 이 예약을 보고 막히도록 함
+            entries = positions.setdefault(inst_id, [])
+            pending_entry = {"side": side, "qty": None, "entry": None, "pending": True}
+            entries.append(pending_entry)
+            save_state(_state)
+
+        ref_price = None
 
         ref_price = None
         try:
@@ -518,13 +526,14 @@ def handle_alert(payload: dict) -> None:
             tp_margin_pct = TAKE_PROFIT_PCT
             sl_margin_pct = STOP_LOSS_PCT * LEVERAGE
 
-        # OKX 주문 전송 — 락을 잡지 않은 채로 실행되어 다른 종목 웹훅과 동시 처리 가능
+                # OKX 주문 전송 — 락을 잡지 않은 채로 실행되어 다른 종목 웹훅과 동시 처리 가능
         qty = _executor.open_position(inst_id, side, notional, ref_price, leverage, tp_margin_pct, sl_margin_pct)
         if qty:
             with _state_lock:
-                positions: dict = _state.setdefault("positions", {})
-                entries = positions.setdefault(inst_id, [])
-                entries.append({"side": side, "qty": qty, "entry": ref_price})
+                # 예약해뒀던 자리를 실제 체결 데이터로 확정
+                pending_entry["qty"] = qty
+                pending_entry["entry"] = ref_price
+                pending_entry.pop("pending", None)
                 save_state(_state)
                 stats = record_trade_result(True)
             label = "🔴 숏" if side == "S" else "🟢 롱"
@@ -538,8 +547,14 @@ def handle_alert(payload: dict) -> None:
                 f"━━━━━━━━━━\n"
                 f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
             )
-        else:
+                else:
             with _state_lock:
+                # 진입 실패했으니 예약해뒀던 자리를 제거 (다음 신호가 다시 시도할 수 있도록)
+                positions: dict = _state.setdefault("positions", {})
+                entries = positions.get(inst_id, [])
+                if pending_entry in entries:
+                    entries.remove(pending_entry)
+                save_state(_state)
                 stats = record_trade_result(False)
             log.warning("%s 진입 실패", inst_id)
             notify(
