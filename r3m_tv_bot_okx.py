@@ -485,10 +485,18 @@ def handle_alert(payload: dict) -> None:
                 log.info("오늘 손절 한도(%d회) 도달로 신규 진입 스킵: %s", MAX_DAILY_SL_COUNT, inst_id)
                 return
 
-                        # 종목별 최대 스태킹 개수 확인 (예: BTC는 이미 포지션이 있으면 추가 진입 안 함)
+                                    # 종목별 최대 스태킹 개수 확인 (예: BTC는 이미 포지션이 있으면 추가 진입 안 함)
             max_stack = SYMBOL_MAX_STACK_OVERRIDE.get(inst_id, MAX_STACK_POSITIONS)
             positions: dict = _state.setdefault("positions", {})
-            existing_count = len(positions.get(inst_id, []))
+            existing_entries = positions.get(inst_id, [])
+            existing_count = len(existing_entries)
+
+            # 반대 방향 신호는 넷 포지션 모드에서 기존 포지션을 상쇄(부분 청산)시키므로 아예 스킵
+            if existing_entries and existing_entries[0].get("side") != side:
+                log.info("%s 반대 방향 신호(기존 %s, 신호 %s)라 진입 스킵 — 기존 포지션 보호",
+                          inst_id, existing_entries[0].get("side"), side)
+                return
+
             if existing_count >= max_stack:
                 log.info("%s 이미 포지션 %d개 보유 중(한도 %d개)이라 진입 스킵", inst_id, existing_count, max_stack)
                 return
