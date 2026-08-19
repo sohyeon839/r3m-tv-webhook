@@ -79,7 +79,7 @@ MAX_STACK_POSITIONS = 1  # 모든 종목 공통: 이미 포지션이 있으면 �
 # 특정 종목만 다른 한도를 쓰고 싶을 때만 여기에 추가 (지금은 기본값 1을 모든 종목에 적용 중)
 SYMBOL_MAX_STACK_OVERRIDE = {}
 
-MAX_DAILY_SL_COUNT = 5   # 하루 손절 5회 넘으면 신규 진입 중지
+MAX_DAILY_SL_COUNT = 10   # 하루 손절 5회 넘으면 신규 진입 중지
 BLUE_BEAM_TP_PCT = 0.15   # 증거금 대비 +15% 익절
 BLUE_BEAM_SL_PCT = 0.10   # 증거금 대비 -10% 손절
 
