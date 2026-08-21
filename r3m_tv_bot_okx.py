@@ -672,7 +672,7 @@ def handle_alert(payload: dict) -> None:
                 f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
             )
                     
-        else:  # exit
+    else:  # exit
         with _state_lock:
             positions: dict = _state.setdefault("positions", {})
             entries = positions.get(inst_id) or []
