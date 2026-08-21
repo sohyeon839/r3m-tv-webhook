@@ -645,7 +645,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         elif re.search(r"매수|롱|LONG|BUY", raw_text, re.IGNORECASE):
             payload["side"] = "long"
 
-                raw_upper = raw_text.upper()
+        raw_upper = raw_text.upper()
         is_square = "스퀘어" in raw_text or "SQUARE" in raw_upper
         is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
         is_blue_beam = "파랑빔" in raw_text
