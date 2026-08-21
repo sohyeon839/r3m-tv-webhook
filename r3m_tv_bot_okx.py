@@ -542,7 +542,27 @@ def handle_alert(payload: dict) -> None:
             sl_margin_pct = STOP_LOSS_PCT * LEVERAGE
 
                 # OKX 주문 전송 — 락을 잡지 않은 채로 실행되어 다른 종목 웹훅과 동시 처리 가능
-        qty = _executor.open_position(inst_id, side, notional, ref_price, leverage, tp_margin_pct, sl_margin_pct)
+        try:
+            qty = _executor.open_position(inst_id, side, notional, ref_price, leverage, tp_margin_pct, sl_margin_pct)
+        except Exception as e:  # noqa: BLE001
+            # OKX가 주문을 거절(증거금 부족 등)하면 예외가 발생하는데, 이때도 예약한 자리를
+            # 반드시 지워야 함 — 안 지우면 유령 포지션으로 남아 손절/승패 집계에 잘못 반영됨
+            with _state_lock:
+                positions: dict = _state.setdefault("positions", {})
+                entries = positions.get(inst_id, [])
+                if pending_entry in entries:
+                    entries.remove(pending_entry)
+                save_state(_state)
+                stats = record_trade_result(False)
+            log.warning("%s 진입 중 예외 발생: %s", inst_id, e)
+            notify(
+                "⚠️ 진입 실패 (OKX)",
+                f"📊 종목: {inst_id}\n"
+                f"❗ 사유: {e}\n"
+                f"━━━━━━━━━━\n"
+                f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
+            )
+            return
         if qty:
             with _state_lock:
                 # 예약해뒀던 자리를 실제 체결 데이터로 확정
