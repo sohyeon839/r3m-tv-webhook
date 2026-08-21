@@ -203,8 +203,7 @@ def record_trade_result(success: bool) -> dict:
     return stats
 
 def get_trade_stats() -> dict:
-    """오늘 성공/실패 카운트를 증가시키지 않고 현재 값만 조회합니다.
-    (진입 자체가 거부된 경우는 실패로 세지 않기 위해 사용)"""
+    """오늘 성공/실패 카운트를 증가시키지 않고 현재 값만 조회합니다."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     stats = _state.setdefault("daily_trade_stats", {"date": today, "success": 0, "fail": 0})
     if stats.get("date") != today:
