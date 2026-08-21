@@ -229,6 +229,18 @@ def record_win_loss(is_win: bool) -> dict:
         stats["loss"] += 1
     save_state(_state)
     return stats
+
+def record_daily_pnl(pnl: float) -> dict:
+    """오늘 실현 손익(USDT)을 누적으로 기록하고, 최신 합계를 반환합니다."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily = _state.setdefault("daily_pnl", {"date": today, "total": 0.0})
+    if daily.get("date") != today:
+        daily["date"] = today
+        daily["total"] = 0.0
+    daily["total"] += pnl
+    save_state(_state)
+    return daily
+ 
 def normalize_symbol(sym: str) -> str:
     """'BTCUSDT', 'BTCUSDT.P', 'BTC-USDT-SWAP' 등을 'BTC-USDT-SWAP'으로 통일."""
     sym = (sym or "").upper().strip()
@@ -660,7 +672,7 @@ def handle_alert(payload: dict) -> None:
                 f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
             )
                     
-    else:  # exit
+        else:  # exit
         with _state_lock:
             positions: dict = _state.setdefault("positions", {})
             entries = positions.get(inst_id) or []
@@ -670,11 +682,14 @@ def handle_alert(payload: dict) -> None:
             log.info("%s 추적 중인 포지션이 없어 청산 스킵", inst_id)
             return
 
-        result = _executor.close_position(inst_id, close_side)  # OKX API 호출 — 락 밖에서 실행
+        result = _executor.close_position(inst_id, close_side)
 
         with _state_lock:
             positions: dict = _state.setdefault("positions", {})
             positions.pop(inst_id, None)
+            daily_pnl = None
+            if result:
+                daily_pnl = record_daily_pnl(result["pnl"])   # ← 추가
             save_state(_state)
 
         label = "🔴 숏" if close_side == "S" else "🟢 롱"
@@ -687,7 +702,8 @@ def handle_alert(payload: dict) -> None:
                 f"{label} 청산 완료\n"
                 f"━━━━━━━━━━\n"
                 f"📊 종목: {inst_id}\n"
-                f"{emoji} 손익: {sign}{pnl:.2f} USDT"
+                f"{emoji} 손익: {sign}{pnl:.2f} USDT\n"
+                f"💵 오늘 누적 손익: {daily_pnl['total']:+.2f} USDT"   # ← 추가
             )
         else:
             notify("✅ 포지션 청산 (OKX)", f"{label} 청산 완료\n📊 종목: {inst_id}")
