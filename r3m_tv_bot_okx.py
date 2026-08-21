@@ -479,7 +479,7 @@ def heartbeat_loop():
         except Exception as e:  # noqa: BLE001
             log.warning("하트비트 알림 실패: %s", e)
 
- def sl_watch_loop():
+def sl_watch_loop():
     while True:
         time.sleep(120)  # 2분마다 확인
         try:
