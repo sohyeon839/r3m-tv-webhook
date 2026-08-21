@@ -7,7 +7,7 @@ OKX로 바뀐 버전입니다.
 ---------
 트레이딩뷰 알림의 "메시지(Message)" 칸에 아래와 같은 JSON을 넣어두면,
 그 알림이 울릴 때마다 이 봇이 받아서 그대로 진입/청산합니다.
-
+ 
   진입(롱): {"secret": "본인이_정한_값", "symbol": "{{ticker}}", "side": "long", "action": "entry"}
   진입(숏): {"secret": "본인이_정한_값", "symbol": "{{ticker}}", "side": "short", "action": "entry"}
   청산    : {"secret": "본인이_정한_값", "symbol": "{{ticker}}", "action": "exit"}
