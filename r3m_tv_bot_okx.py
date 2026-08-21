@@ -519,8 +519,9 @@ def sl_watch_loop():
                 with _state_lock:
                     if not is_win:
                         record_sl_hit()
-                        record_trade_result(False)  # 손절만 "실패"로 카운트
+                        record_trade_result(False)
                     win_loss_stats = record_win_loss(is_win)
+                    daily_pnl = record_daily_pnl(pnl)   # ← 이 줄 추가
                     positions_state = _state.setdefault("positions", {})
                     positions_state[inst_id] = []
                     save_state(_state)
@@ -532,7 +533,8 @@ def sl_watch_loop():
                         f"📊 종목: {inst_id}\n"
                         f"💰 손익: {sign}{pnl:.2f} USDT\n"
                         f"━━━━━━━━━━\n"
-                        f"📈 오늘 승: {win_loss_stats['win']}회 / 패: {win_loss_stats['loss']}회"
+                        f"📈 오늘 승: {win_loss_stats['win']}회 / 패: {win_loss_stats['loss']}회\n"
+                        f"💵 오늘 누적 손익: {daily_pnl['total']:+.2f} USDT"   # ← 이 줄 추가
                     )
         except Exception as e:  # noqa: BLE001
             log.warning("손절 감시 루프 오류: %s", e)
