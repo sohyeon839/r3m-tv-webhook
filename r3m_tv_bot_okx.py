@@ -507,6 +507,17 @@ def sl_watch_loop():
 
             # OKX API 호출은 락 밖에서 실행 — 네트워크 지연이 웹훅 처리를 막지 않도록 함
             for inst_id in closed_inst_ids:
+                with _state_lock:
+                    entries = positions_state.get(inst_id) or []
+                    has_real_entry = any(e.get("qty") for e in entries)
+
+                if not has_real_entry:
+                    with _state_lock:
+                        positions_state = _state.setdefault("positions", {})
+                        positions_state[inst_id] = []
+                        save_state(_state)
+                    continue
+
                 hist = _executor._request(
                     "GET", "/api/v5/account/positions-history",
                     params={"instId": inst_id, "limit": "1"},
@@ -514,7 +525,6 @@ def sl_watch_loop():
                 rows = hist.get("data", [])
                 pnl = float(rows[0].get("pnl", 0) or 0) if rows else 0.0
                 is_win = pnl >= 0
-
                 # ↓↓↓ 여기부터 for 루프 안으로 이동 (핵심 수정) ↓↓↓
                 with _state_lock:
                     if not is_win:
