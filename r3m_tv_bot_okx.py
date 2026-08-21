@@ -217,7 +217,7 @@ def parse_panterra_text(text: str) -> Optional[dict]:
     symbol = m.group(1) if m else "BTCUSDT"
 
     # 2) 방향 판단
-    if "매수" in text or "파랑빔" in text or "LONG" in text.upper():
+    if "매수" in text or "파랑빔" in text or "구름" in text or "LONG" in text.upper():
         side = "long"
     elif "매도" in text or "노랑빔" in text or "SHORT" in text.upper():
         side = "short"
