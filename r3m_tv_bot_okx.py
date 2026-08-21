@@ -68,7 +68,7 @@ STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5%
 # 파랑빔 전용 설정
 BLUE_BEAM_NOTIONAL_USDT = 1500.0
 BLUE_BEAM_LEVERAGE = 10
-CLOUD_TOUCH_LEVERAGE = 3  # 구름 터치는 파랑빔과 증거금/TP/SL은 같고 레버리지만 3배
+CLOUD_TOUCH_LEVERAGE = 5  # 구름 터치는 파랑빔과 증거금/TP/SL은 같고 레버리지만 3배
 
 # (여기 값은 "포지션 규모" 기준이라, 실제 증거금 300 USDT를 원하면 300 × 레버리지(10) = 3000으로 설정)
 SYMBOL_NOTIONAL_OVERRIDE = {
