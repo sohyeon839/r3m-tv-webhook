@@ -479,7 +479,7 @@ def heartbeat_loop():
         except Exception as e:  # noqa: BLE001
             log.warning("하트비트 알림 실패: %s", e)
 
-def sl_watch_loop():
+ def sl_watch_loop():
     while True:
         time.sleep(120)  # 2분마다 확인
         try:
@@ -503,24 +503,25 @@ def sl_watch_loop():
                 pnl = float(rows[0].get("pnl", 0) or 0) if rows else 0.0
                 is_win = pnl >= 0
 
-            with _state_lock:
-                if not is_win:
-                    record_sl_hit()
-                    record_trade_result(False)  # 손절만 "실패"로 카운트
-                win_loss_stats = record_win_loss(is_win)
-                positions_state = _state.setdefault("positions", {})
-                positions_state[inst_id] = []
-                save_state(_state)
+                # ↓↓↓ 여기부터 for 루프 안으로 이동 (핵심 수정) ↓↓↓
+                with _state_lock:
+                    if not is_win:
+                        record_sl_hit()
+                        record_trade_result(False)  # 손절만 "실패"로 카운트
+                    win_loss_stats = record_win_loss(is_win)
+                    positions_state = _state.setdefault("positions", {})
+                    positions_state[inst_id] = []
+                    save_state(_state)
 
-                emoji = "✅ 익절" if is_win else "🛑 손절"
-                sign = "+" if pnl >= 0 else ""
-                notify(
-                    f"{emoji} (OKX)",
-                    f"📊 종목: {inst_id}\n"
-                    f"💰 손익: {sign}{pnl:.2f} USDT\n"
-                    f"━━━━━━━━━━\n"
-                    f"📈 오늘 승: {win_loss_stats['win']}회 / 패: {win_loss_stats['loss']}회"
-                )
+                    emoji = "✅ 익절" if is_win else "🛑 손절"
+                    sign = "+" if pnl >= 0 else ""
+                    notify(
+                        f"{emoji} (OKX)",
+                        f"📊 종목: {inst_id}\n"
+                        f"💰 손익: {sign}{pnl:.2f} USDT\n"
+                        f"━━━━━━━━━━\n"
+                        f"📈 오늘 승: {win_loss_stats['win']}회 / 패: {win_loss_stats['loss']}회"
+                    )
         except Exception as e:  # noqa: BLE001
             log.warning("손절 감시 루프 오류: %s", e)
 # ----------------------------------------------------------------------------
