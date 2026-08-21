@@ -68,6 +68,8 @@ STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5%
 # 파랑빔 전용 설정
 BLUE_BEAM_NOTIONAL_USDT = 1500.0
 BLUE_BEAM_LEVERAGE = 10
+CLOUD_TOUCH_LEVERAGE = 3  # 구름 터치는 파랑빔과 증거금/TP/SL은 같고 레버리지만 3배
+
 # (여기 값은 "포지션 규모" 기준이라, 실제 증거금 300 USDT를 원하면 300 × 레버리지(10) = 3000으로 설정)
 SYMBOL_NOTIONAL_OVERRIDE = {
     "BTC-USDT-SWAP": 3000.0,  # 실제 증거금 = 3000 / 10 = 300 USDT
@@ -528,6 +530,9 @@ def handle_alert(payload: dict) -> None:
             # BTC/ETH는 파랑빔 진입 시 증거금을 별도 지정된 값으로 사용
             if inst_id in SYMBOL_NOTIONAL_OVERRIDE:
                 notional = SYMBOL_NOTIONAL_OVERRIDE[inst_id]
+            # 구름 터치는 레버리지만 3배로 별도 적용 (증거금/TP/SL은 파랑빔과 동일)
+            if payload.get("_cloud_touch"):
+                leverage = CLOUD_TOUCH_LEVERAGE
         else:
             notional = POSITION_NOTIONAL_USDT
             leverage = LEVERAGE
@@ -673,8 +678,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if is_blue_beam or is_yellow_beam or is_cloud_touch:
-            payload["_blue_beam"] = True  # 노랑빔/구름터치도 파랑빔과 동일한 포지션 설정을 사용
+        if is_blue_beam or is_yellow_beam:
+            payload["_blue_beam"] = True  # 노랑빔도 파랑빔과 동일한 포지션 설정을 사용
+        if is_cloud_touch:
+            payload["_blue_beam"] = True
+            payload["_cloud_touch"] = True  # 레버리지만 3배로 다르게 적용하기 위한 별도 표시
         if payload.get("secret") != WEBHOOK_SECRET:
             log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
             body = b'{"error":"unauthorized"}'
