@@ -68,7 +68,8 @@ STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5%
 # 파랑빔 전용 설정
 BLUE_BEAM_NOTIONAL_USDT = 1500.0
 BLUE_BEAM_LEVERAGE = 10
-CLOUD_TOUCH_LEVERAGE = 5  # 구름 터치는 파랑빔과 증거금/TP/SL은 같고 레버리지만 3배
+CLOUD_TOUCH_LEVERAGE = 5  # 구름 터치는 레버리지 5배
+CLOUD_TOUCH_NOTIONAL_USDT = 750.0  # 실제 증거금 = 750 / 5 = 150 USDT
 
 # (여기 값은 "포지션 규모" 기준이라, 실제 증거금 300 USDT를 원하면 300 × 레버리지(10) = 3000으로 설정)
 SYMBOL_NOTIONAL_OVERRIDE = {
@@ -530,9 +531,10 @@ def handle_alert(payload: dict) -> None:
             # BTC/ETH는 파랑빔 진입 시 증거금을 별도 지정된 값으로 사용
             if inst_id in SYMBOL_NOTIONAL_OVERRIDE:
                 notional = SYMBOL_NOTIONAL_OVERRIDE[inst_id]
-            # 구름 터치는 레버리지만 3배로 별도 적용 (증거금/TP/SL은 파랑빔과 동일)
+            # 구름 터치는 레버리지/증거금을 별도 값으로 적용 (BTC/ETH 예외보다 우선 적용됨)
             if payload.get("_cloud_touch"):
                 leverage = CLOUD_TOUCH_LEVERAGE
+                notional = CLOUD_TOUCH_NOTIONAL_USDT
         else:
             notional = POSITION_NOTIONAL_USDT
             leverage = LEVERAGE
