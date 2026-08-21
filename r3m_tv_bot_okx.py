@@ -158,6 +158,18 @@ def record_trade_result(success: bool) -> dict:
     save_state(_state)
     return stats
 
+def get_trade_stats() -> dict:
+    """오늘 성공/실패 카운트를 증가시키지 않고 현재 값만 조회합니다.
+    (진입 자체가 거부된 경우는 실패로 세지 않기 위해 사용)"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    stats = _state.setdefault("daily_trade_stats", {"date": today, "success": 0, "fail": 0})
+    if stats.get("date") != today:
+        stats["date"] = today
+        stats["success"] = 0
+        stats["fail"] = 0
+        save_state(_state)
+    return stats
+  
 def record_win_loss(is_win: bool) -> dict:
     """청산 결과(익절/손절)를 오늘 날짜 기준으로 누적 기록하고, 최신 카운트를 반환합니다."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -447,12 +459,13 @@ def sl_watch_loop():
                 is_win = pnl >= 0
 
                 with _state_lock:
-                    if not is_win:
-                        record_sl_hit()
-                    win_loss_stats = record_win_loss(is_win)
-                    positions_state = _state.setdefault("positions", {})
-                    positions_state[inst_id] = []
-                    save_state(_state)
+                if not is_win:
+                    record_sl_hit()
+                    record_trade_result(False)  # 손절만 "실패"로 카운트
+                win_loss_stats = record_win_loss(is_win)
+                positions_state = _state.setdefault("positions", {})
+                positions_state[inst_id] = []
+                save_state(_state)
 
                 emoji = "✅ 익절" if is_win else "🛑 손절"
                 sign = "+" if pnl >= 0 else ""
@@ -553,7 +566,7 @@ def handle_alert(payload: dict) -> None:
                 if pending_entry in entries:
                     entries.remove(pending_entry)
                 save_state(_state)
-                stats = record_trade_result(False)
+                stats = get_trade_stats()
             log.warning("%s 진입 중 예외 발생: %s", inst_id, e)
             notify(
                 "⚠️ 진입 실패 (OKX)",
@@ -590,7 +603,7 @@ def handle_alert(payload: dict) -> None:
                 if pending_entry in entries:
                     entries.remove(pending_entry)
                 save_state(_state)
-                stats = record_trade_result(False)
+                stats = get_trade_stats()
             log.warning("%s 진입 실패", inst_id)
             notify(
                 "⚠️ 진입 실패 (OKX)",
