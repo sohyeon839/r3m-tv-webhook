@@ -450,6 +450,36 @@ class OkxExecutor:
         return [p for p in data.get("data", []) if float(p.get("pos", 0)) != 0]
 
 
+  def sync_positions_from_exchange() -> None:
+      """봇이 시작될 때 OKX에 실제로 떠있는 포지션을 조회해서 로컬 상태를 그 기준으로 다시 맞춥니다.
+      재배포로 로컬 상태 파일이 초기화되어도, 실제로 열려있는 포지션은 다시 정확히 인식하게 됩니다."""
+      try:
+          open_positions = _executor.get_open_positions()
+      except Exception as e:  # noqa: BLE001
+          log.warning("시작 시 포지션 동기화 실패: %s", e)
+          return
+
+      with _state_lock:
+          new_positions: dict = {}
+          for p in open_positions:
+              inst_id = p.get("instId")
+              pos_val = float(p.get("pos", 0) or 0)
+              if not inst_id or pos_val == 0:
+                  continue
+              side = "L" if pos_val > 0 else "S"
+              entry_px = float(p.get("avgPx", 0) or 0)
+              qty = abs(pos_val)
+              new_positions[inst_id] = [{"side": side, "qty": qty, "entry": entry_px}]
+
+          _state["positions"] = new_positions
+          save_state(_state)
+
+      if new_positions:
+          log.info("시작 시 OKX 실제 포지션과 동기화 완료: %s", ", ".join(new_positions.keys()))
+      else:
+          log.info("시작 시 OKX에 열려있는 포지션이 없습니다.")
+
+
 # ----------------------------------------------------------------------------
 # 하트비트(5분 정기 리포트)
 # ----------------------------------------------------------------------------
@@ -822,7 +852,7 @@ class WebhookServer(ThreadingHTTPServer):
     request_queue_size = 128
     daemon_threads = True
     allow_reuse_address = True
-  
+
 def main():
     global _executor, _state
 
@@ -834,6 +864,7 @@ def main():
 
     _executor = OkxExecutor(api_key=api_key, api_secret=api_secret, passphrase=passphrase)
     _state = load_state()
+    sync_positions_from_exchange()
 
     log.info(
         "TV 웹훅 봇(OKX) 시작 | notional=%sUSDT leverage=%sx port=%s",
