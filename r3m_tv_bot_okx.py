@@ -458,7 +458,7 @@ def sl_watch_loop():
                 pnl = float(rows[0].get("pnl", 0) or 0) if rows else 0.0
                 is_win = pnl >= 0
 
-                with _state_lock:
+            with _state_lock:
                 if not is_win:
                     record_sl_hit()
                     record_trade_result(False)  # 손절만 "실패"로 카운트
