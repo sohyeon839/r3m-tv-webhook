@@ -96,6 +96,50 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("r3m_tv_okx_bot")
 
+class OkxApiError(RuntimeError):
+    """OKX가 code != '0' 으로 응답했을 때 발생. sCode/sMsg를 따로 보관해서
+    나중에 사람이 읽기 편한 한글 메시지로 바꿀 수 있게 함."""
+    def __init__(self, data: dict):
+        self.data = data
+        first = (data.get("data") or [{}])[0]
+        self.scode = str(first.get("sCode", ""))
+        self.smsg = first.get("sMsg", "")
+        super().__init__(f"OKX API 오류: {data}")
+
+
+OKX_ERROR_MESSAGES = {
+    "50001": "거래소 시스템 점검 중",
+    "50004": "요청 시간 초과 (체결 여부 불확실 — 포지션 확인 필요)",
+    "50005": "OKX API 일시 중단",
+    "50011": "요청이 너무 잦음 (레이트 리밋)",
+    "50013": "거래소 시스템 혼잡, 잠시 후 재시도 필요",
+    "51000": "요청 파라미터 오류",
+    "51001": "존재하지 않는 종목",
+    "51004": "주문 수량이 한도 초과",
+    "51006": "주문 가격이 허용 범위를 벗어남",
+    "51008": "증거금(USDT) 부족",
+    "51009": "주문 기능이 일시적으로 제한됨(거래소 측)",
+    "51023": "청산할 포지션이 이미 없음",
+    "51119": "잔고 부족으로 주문 실패",
+    "51127": "사용 가능한 잔고가 0",
+    "51131": "잔고 부족",
+    "59100": "미체결 포지션이 있어 레버리지 변경 불가",
+    "59101": "격리 모드 미체결 주문이 있어 레버리지 변경 불가",
+    "59102": "설정한 레버리지가 최대 허용치 초과",
+    "59103": "레버리지 대비 증거금 부족",
+    "59108": "레버리지가 낮고 증거금도 부족함",
+}
+
+
+def format_okx_error(e: Exception) -> str:
+    """OKX API 에러를 사람이 읽기 편한 한글 한 줄로 정리."""
+    if isinstance(e, OkxApiError):
+        known = OKX_ERROR_MESSAGES.get(e.scode)
+        if known:
+            return known
+        if e.smsg:
+            return e.smsg.strip()
+    return str(e)
 
 def notify(title: str, message: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
