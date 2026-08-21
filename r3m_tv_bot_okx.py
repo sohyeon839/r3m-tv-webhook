@@ -1,4 +1,4 @@
-"""
+ㅅ"""
 TradingView Webhook Auto-Trading Bot (OKX) — 바이비트 봇(r3m_tv_bot.py)과
 완전히 독립적인 프로그램입니다. 구조와 웹훅 형식은 동일하고, 거래소만
 OKX로 바뀐 버전입니다.
@@ -691,27 +691,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
-        if not is_square and not is_panterra and not is_blue_beam and not is_yellow_beam and not is_cluster:
-            log.info("스퀘어/판테라/파랑빔/노랑빔/클러스터 신호가 아니라서 진입 스킵: %s", raw_text[:100])
-            body = b'{"ok":true,"skipped":"not allowed signal"}'
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if is_blue_beam or is_yellow_beam:
-            payload["_blue_beam"] = True  # 노랑빔도 파랑빔과 동일한 포지션 설정을 사용
-        if payload.get("secret") != WEBHOOK_SECRET:
-            log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
-            body = b'{"error":"unauthorized"}'
-            self.send_response(401)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-          
-        if is_blue_beam:
-            payload["_blue_beam"] = True
         try:
             handle_alert(payload)
             body = b'{"ok":true}'
