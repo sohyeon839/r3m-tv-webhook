@@ -71,7 +71,7 @@ BLUE_BEAM_LEVERAGE = 10
 CLOUD_TOUCH_LEVERAGE = 5  # 구름 터치는 레버리지 5배
 CLOUD_TOUCH_NOTIONAL_USDT = 750.0  # 실제 증거금 = 750 / 5 = 150 USDT
 CLOUD_TOUCH_TP_PCT = 0.15   # 구름대매매 전용 익절: 증거금 대비 +15%
-CLOUD_TOUCH_SL_PCT = 0.07  # 구름대매매 전용 손절: 증거금 대비 -0.7%
+CLOUD_TOUCH_SL_PCT = 0.05  # 구름대매매 전용 손절: 증거금 대비 -0.7%
 
 # (여기 값은 "포지션 규모" 기준이라, 실제 증거금 300 USDT를 원하면 300 × 레버리지(10) = 3000으로 설정)
 SYMBOL_NOTIONAL_OVERRIDE = {
