@@ -450,7 +450,7 @@ class OkxExecutor:
         return [p for p in data.get("data", []) if float(p.get("pos", 0)) != 0]
 
 
-  def sync_positions_from_exchange() -> None:
+def sync_positions_from_exchange() -> None:
       """봇이 시작될 때 OKX에 실제로 떠있는 포지션을 조회해서 로컬 상태를 그 기준으로 다시 맞춥니다.
       재배포로 로컬 상태 파일이 초기화되어도, 실제로 열려있는 포지션은 다시 정확히 인식하게 됩니다."""
       try:
