@@ -733,7 +733,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
         is_blue_beam = "파랑빔" in raw_text
         is_yellow_beam = "노랑빔" in raw_text
-        is_cloud_touch = "구름" in raw_text and "터치" in raw_text
+        is_cloud_touch = bool(re.search(r"구름\s*0(?!\d)", raw_text)) and "터치" in raw_text
         is_cluster_resistance = "클러스터" in raw_text and "저항" in raw_text
         is_cluster_support = "클러스터" in raw_text and "지지" in raw_text
         is_cluster = is_cluster_resistance or is_cluster_support
