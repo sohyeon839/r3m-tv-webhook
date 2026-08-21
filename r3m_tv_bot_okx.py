@@ -264,7 +264,7 @@ class OkxExecutor:
         resp = requests.request(method, url, headers=headers, data=body_str if body else None, timeout=15)
         data = resp.json()
         if data.get("code") not in ("0", 0):
-            raise RuntimeError(f"OKX API 오류: {data}")
+         raise OkxApiError(data)
         return data
 
     # -- 공개 데이터 --------------------------------------------------------
@@ -558,7 +558,7 @@ def handle_alert(payload: dict) -> None:
             notify(
                 "⚠️ 진입 실패 (OKX)",
                 f"📊 종목: {inst_id}\n"
-                f"❗ 사유: {e}\n"
+                f"❗ 사유: {format_okx_error(e)}\n"
                 f"━━━━━━━━━━\n"
                 f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
             )
