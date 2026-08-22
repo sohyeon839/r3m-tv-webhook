@@ -2,7 +2,7 @@
 TradingView Webhook Auto-Trading Bot (OKX) — 바이비트 봇(r3m_tv_bot.py)과
 완전히 독립적인 프로그램입니다. 구조와 웹훅 형식은 동일하고, 거래소만
 OKX로 바뀐 버전입니다.
-
+  
 동작 방식
 ---------
 트레이딩뷰 알림의 "메시지(Message)" 칸에 아래와 같은 JSON을 넣어두면,
