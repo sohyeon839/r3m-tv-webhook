@@ -71,7 +71,7 @@ BLUE_BEAM_LEVERAGE = 10
 CLOUD_TOUCH_LEVERAGE = 5  # 구름 터치는 레버리지 5배
 CLOUD_TOUCH_NOTIONAL_USDT = 750.0  # 실제 증거금 = 750 / 5 = 150 USDT
 CLOUD_TOUCH_TP_PCT = 0.10   # 구름대매매 전용 익절: 증거금 대비 +15%
-CLOUD_TOUCH_SL_PCT = 0.05  # 구름대매매 전용 손절: 증거금 대비 -0.7%
+CLOUD_TOUCH_SL_PCT = 0.05  # 구름대매매 전용 손절: 증거금 대비 -0.5%
 
 # (여기 값은 "포지션 규모" 기준이라, 실제 증거금 300 USDT를 원하면 300 × 레버리지(10) = 3000으로 설정)
 SYMBOL_NOTIONAL_OVERRIDE = {
@@ -796,7 +796,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
         is_blue_beam = "파랑빔" in raw_text
         is_yellow_beam = "노랑빔" in raw_text
-        is_cloud_touch = bool(re.search(r"구름\s*0(?!\d)", raw_text)) and "터치" in raw_text
+        is_cloud_touch = bool(re.search(r"구름\s*[01](?!\d)", raw_text)) and "터치" in raw_text
         is_cluster_resistance = "클러스터" in raw_text and "저항" in raw_text
         is_cluster_support = "클러스터" in raw_text and "지지" in raw_text
         is_cluster = is_cluster_resistance or is_cluster_support
