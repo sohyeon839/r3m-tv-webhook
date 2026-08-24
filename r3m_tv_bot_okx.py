@@ -68,8 +68,8 @@ STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5%
 # 파랑빔 전용 설정
 BLUE_BEAM_NOTIONAL_USDT = 1500.0
 BLUE_BEAM_LEVERAGE = 10
-CLOUD_TOUCH_LEVERAGE = 5  # 구름 터치는 레버리지 5배
-CLOUD_TOUCH_NOTIONAL_USDT = 750.0  # 실제 증거금 = 750 / 5 = 150 USDT
+CLOUD_TOUCH_LEVERAGE = 100  # 구름 터치는 레버리지 5배
+CLOUD_TOUCH_NOTIONAL_USDT = 500.0  # 실제 증거금 = 750 / 5 = 150 USDT
 CLOUD_TOUCH_TP_PCT = 0.10   # 구름대매매 전용 익절: 증거금 대비 +15%
 CLOUD_TOUCH_SL_PCT = 0.05  # 구름대매매 전용 손절: 증거금 대비 -0.5%
 
