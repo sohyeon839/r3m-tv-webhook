@@ -792,23 +792,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
             payload["side"] = "long"
 
         raw_upper = raw_text.upper()
-        is_square = "스퀘어" in raw_text or "SQUARE" in raw_upper
-        is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
-        is_blue_beam = "파랑빔" in raw_text
-        is_yellow_beam = "노랑빔" in raw_text
-        is_cloud_touch = bool(re.search(r"구름\s*[01](?!\d)", raw_text)) and "터치" in raw_text
-        is_cluster_resistance = "클러스터" in raw_text and "저항" in raw_text
-        is_cluster_support = "클러스터" in raw_text and "지지" in raw_text
-        is_cluster = is_cluster_resistance or is_cluster_support
-
-        # 클러스터 신호는 "저항/지지"라는 단어만으로 방향이 정해지므로 명시적으로 지정
-        if is_cluster_resistance:
-            payload["side"] = "short"
-        elif is_cluster_support:
-            payload["side"] = "long"
-
-        # 구름 터치는 매수(롱) 전용 신호
-        if is_cloud_touch:
             payload["side"] = "long"
 
         if not is_square and not is_panterra:
