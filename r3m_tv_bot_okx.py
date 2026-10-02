@@ -792,7 +792,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
             payload["side"] = "long"
 
         raw_upper = raw_text.upper()
-            payload["side"] = "long"
+        is_square = "스퀘어" in raw_text or "SQUARE" in raw_upper
+        is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
 
         if not is_square and not is_panterra:
             log.info("스퀘어/판테라 신호가 아니라서 진입 스킵: %s", raw_text[:100])
