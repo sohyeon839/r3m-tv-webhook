@@ -811,8 +811,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if is_cloud_touch:
             payload["side"] = "long"
 
-        if not is_square and not is_panterra and not is_blue_beam and not is_yellow_beam and not is_cluster and not is_cloud_touch:
-            log.info("스퀘어/판테라/파랑빔/노랑빔/클러스터/구름터치 신호가 아니라서 진입 스킵: %s", raw_text[:100])
+        if not is_square and not is_panterra:
+            log.info("스퀘어/판테라 신호가 아니라서 진입 스킵: %s", raw_text[:100])
             body = b'{"ok":true,"skipped":"not allowed signal"}'
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
