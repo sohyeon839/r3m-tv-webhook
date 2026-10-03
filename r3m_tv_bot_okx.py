@@ -808,6 +808,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if is_cloud_touch:
+            log.info("구름 신호는 진입 안 함 (스킵): %s", raw_text[:100])
+            body = b'{"ok":true,"skipped":"cloud signal"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if is_blue_beam or is_yellow_beam:
             payload["_blue_beam"] = True  # 노랑빔도 파랑빔과 동일한 포지션 설정을 사용
         if is_cloud_touch:
