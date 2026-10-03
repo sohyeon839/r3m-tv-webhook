@@ -794,9 +794,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
         raw_upper = raw_text.upper()
         is_square = "스퀘어" in raw_text or "SQUARE" in raw_upper
         is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
+        is_blue_beam = "파랑빔" in raw_text
+        is_yellow_beam = "노랑빔" in raw_text
+        is_cloud_touch = "구름" in raw_text
+        is_red_diamond = "빨간다이아" in raw_text or "RED DIAMOND" in raw_upper
 
-        if not is_square and not is_panterra:
-            log.info("스퀘어/판테라 신호가 아니라서 진입 스킵: %s", raw_text[:100])
+        if not is_square and not is_panterra and not is_red_diamond:
+            log.info("허용된 신호가 아니라서 진입 스킵: %s", raw_text[:100])
             body = b'{"ok":true,"skipped":"not allowed signal"}'
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
