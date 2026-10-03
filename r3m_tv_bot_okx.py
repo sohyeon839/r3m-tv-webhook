@@ -798,6 +798,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         is_yellow_beam = "노랑빔" in raw_text
         is_cloud_touch = "구름" in raw_text
         is_red_diamond = "빨간다이아" in raw_text or "RED DIAMOND" in raw_upper
+        is_blue_diamond = "파랑다이아" in raw_text or "BLUE DIAMOND" in raw_upper
 
         if not is_square and not is_panterra and not is_red_diamond:
             log.info("허용된 신호가 아니라서 진입 스킵: %s", raw_text[:100])
