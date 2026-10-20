@@ -70,8 +70,8 @@ except ImportError:  # pragma: no cover
 
 WEBHOOK_PORT = int(os.environ.get("PORT", 8788))  # Railway 등 클라우드는 PORT 환경변수를 자동 지정함
 WEBHOOK_SECRET = "0413"   # 반드시 본인만 아는 값으로 바꾸세요
-POSITION_NOTIONAL_USDT = 2500.0         # 알림 1건당 진입 명목가치(USDT)
-LEVERAGE = 10    
+POSITION_NOTIONAL_USDT = 3000.0         # 알림 1건당 진입 명목가치(USDT)
+LEVERAGE = 5    
 TAKE_PROFIT_PCT = 0.10   # 익절: 증거금 대비 수익률 +10% (레버리지 반영해서 자동 계산)
 STOP_LOSS_PCT = 0.007    # 손절: 진입가 대비 -0.7% (증거금 기준 10배 레버리지 시 -7%)
 # 웨일헌터 전용 설정 (실제 가격 변동률 기준 %)
