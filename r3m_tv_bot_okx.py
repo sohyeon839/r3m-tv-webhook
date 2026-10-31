@@ -614,9 +614,18 @@ def heartbeat_loop():
             else:
                 pos_text = "보유 포지션 없음"
 
+            with _state_lock:
+                wl = dict(_daily("daily_win_loss", {"win": 0, "loss": 0}))
+                pnl_today = _daily("daily_pnl", {"total": 0.0})["total"]
+                sl_count = _daily("daily_sl", {"count": 0})["count"]
+            stopped = "\n⛔ 오늘 손절 한도 도달 — 신규 진입 중지 중" if sl_count >= MAX_DAILY_SL_COUNT else ""
+
             notify("📊 정기 리포트 (OKX)",
                    f"━━━━━━━━━━\n💰 USDT 잔고: {summary['usdt_balance']:.2f}\n"
-                   f"{'📈' if upl >= 0 else '📉'} 미실현 손익: {upl:+.2f}\n━━━━━━━━━━\n\n"
+                   f"{'📈' if upl >= 0 else '📉'} 미실현 손익: {upl:+.2f}\n━━━━━━━━━━\n"
+                   f"🗓 오늘 성적 (한국시간 0시 기준)\n"
+                   f"🏆 {wl['win']}승 {wl['loss']}패\n"
+                   f"💵 당일 실현손익: {pnl_today:+.2f} USDT{stopped}\n━━━━━━━━━━\n\n"
                    f"📌 보유 포지션\n{pos_text}")
         except Exception as e:  # noqa: BLE001
             log.warning("하트비트 알림 실패: %s", e)
@@ -659,8 +668,8 @@ def sl_watch_loop():
 
                 notify(f"{'✅ 익절' if is_win else '🛑 손절'} (OKX)",
                        f"📊 종목: {inst_id}\n💰 손익: {pnl:+.2f} USDT\n━━━━━━━━━━\n"
-                       f"📈 오늘 승: {win_loss['win']}회 / 패: {win_loss['loss']}회\n"
-                       f"💵 오늘 누적 손익: {daily_pnl['total']:+.2f} USDT")
+                       f"🏆 오늘 {win_loss['win']}승 {win_loss['loss']}패\n"
+                       f"💵 당일 실현손익: {daily_pnl['total']:+.2f} USDT")
         except Exception as e:  # noqa: BLE001
             log.warning("손절 감시 루프 오류: %s", e)
 
