@@ -80,54 +80,63 @@ ZETRO_MAX_SIGNAL_AGE_SEC = 180    # 기본: 3분보다 오래된 신호는 진�
 # OKX 해당 종목의 최근 24시간 거래대금이 이보다 작으면 진입 안 함
 MIN_24H_VOLUME_USD = 1_000_000
 
+# API 조회로 들어온 신호의 실제 진입 ON/OFF
+# False: 신호는 계속 조회해서 로그에만 남기고 진입은 안 함 (웹훅 확인 중이라 꺼둔 상태)
+ZETRO_API_ENTRY_ENABLED = False
+
 # zetro 웹훅 수신 주소 (zetro 웹훅 설정에 넣을 주소의 뒷부분)
 ZETRO_HOOK_PATH = "/zetro-hook/5472118043e07db5"
 
 # 진입할 신호 규칙
-#   keywords   : 신호 종류(type) 이름에 이 단어가 들어가면 해당 신호로 인식 (대소문자 무시)
 #   symbols    : 진입 허용 종목 (None이면 전 종목)
 #   max_age_sec: 신호가 뜬 뒤 이 시간(초) 안에만 진입
+# zetro API 신호 코드 (시작 시 받은 신호 종류 목록으로 확인한 값)
+#   atropos            = 아트로포스
+#   square             = 스퀘어 (kind: buy=롱 / sell=숏)
+#   diamond            = 다이아 (kind: blue=급락 매수 다이아, rocket=급락 매수 로켓,
+#                                 green, pink, skull 등은 다른 다이아)
+#   cluster_touch      = 클러스터 (kind: res=저항 닿음, sup=지지 닿음)
+#
+#   type : 신호 코드 (정확히 일치)
+#   kinds: 그 안의 세부 종류 (None이면 전부)
 ZETRO_SIGNAL_RULES = {
     "급락매수다이아": {
-        "keywords": ["급락매수다이아", "급락 매수", "급락매수", "dip", "crash", "plunge", "dump", "sharp_drop", "drop_buy"],
+        "type": "diamond",
+        "kinds": {"blue"},          # 급락 매수 다이아만
         "symbols": None,            # 전 종목
-        "tfs": {"5m"},              # 5분봉만
+        "tfs": {"5m"},
         "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
-        "leverage": 3,              # 증거금 100 × 3배 = 포지션 300 USDT
+        "leverage": 3,              # 증거금 100 × 3배
+    },
+    "아트로포스": {
+        "type": "atropos",
+        "kinds": None,
+        "symbols": None,            # BTC 포함 전 종목
+        "tfs": {"5m"},
+        "max_age_sec": 60,          # 뜬 지 1분 이내만
+        "leverage": LEVERAGE,
+    },
+    "스퀘어": {
+        "type": "square",
+        "kinds": None,
+        "symbols": {"BTCUSDT"},     # BTC만
+        "tfs": {"5m"},
+        "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
+        "leverage": LEVERAGE,
     },
     "클러스터 저항": {
-        "keywords": ["cluster_res", "cluster_resistance", "클러스터 저항"],
-        "symbols": None,            # 전 종목
-        "tfs": {"5m"},              # 5분봉만
-        "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
-        "leverage": LEVERAGE,
-    },
-    "클러스터 지지": {
-        "keywords": ["cluster_sup", "cluster_support", "클러스터 지지"],
-        "symbols": None,            # 전 종목
-        "tfs": {"5m"},              # 5분봉만
-        "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
-        "leverage": LEVERAGE,
-    },
-    # 이름이 위 둘처럼 나뉘지 않고 "cluster_touch" 하나로 오는 경우 대비
-    "클러스터": {
-        "keywords": ["cluster", "클러스터"],
+        "type": "cluster_touch",
+        "kinds": {"res"},
         "symbols": None,
         "tfs": {"5m"},
         "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
         "leverage": LEVERAGE,
     },
-    "아트로포스": {
-        "keywords": ["atropos", "아트로포스"],
-        "symbols": None,            # BTC 포함 전 종목
-        "tfs": {"5m"},              # 5분봉만
-        "max_age_sec": 60,          # 뜬 지 1분 이내만
-        "leverage": LEVERAGE,
-    },
-    "스퀘어": {
-        "keywords": ["square", "스퀘어"],
-        "symbols": {"BTCUSDT"},     # BTC만
-        "tfs": {"5m"},              # 5분봉만
+    "클러스터 지지": {
+        "type": "cluster_touch",
+        "kinds": {"sup"},
+        "symbols": None,
+        "tfs": {"5m"},
         "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
         "leverage": LEVERAGE,
     },
@@ -538,11 +547,15 @@ def _zetro_signal_key(sig: dict) -> str:
     return f"{sig.get('symbol')}|{sig.get('type')}|{sig.get('tf')}|{sig.get('at')}|{sig.get('side')}"
 
 
-def _match_rule(sig_type: str) -> Optional[str]:
-    t = sig_type.lower()
+def _match_rule(sig: dict) -> Optional[str]:
+    t = str(sig.get("type", "")).lower()
+    k = str(sig.get("kind", "")).lower()
     for name, rule in ZETRO_SIGNAL_RULES.items():
-        if any(k.lower() in t for k in rule["keywords"]):
-            return name
+        if t != rule["type"]:
+            continue
+        if rule["kinds"] and k not in rule["kinds"]:
+            continue
+        return name
     return None
 
 
@@ -579,7 +592,8 @@ def zetro_poll_loop():
     first_run = not seen   # 처음 켰을 때 이미 떠 있던 신호는 기록만 하고 진입 안 함
     error_streak = 0
 
-    log.info("zetro 신호 조회 시작 (%s초 간격)", ZETRO_POLL_SECONDS)
+    log.info("zetro 신호 조회 시작 (%s초 간격, API 진입: %s)", ZETRO_POLL_SECONDS,
+             "ON" if ZETRO_API_ENTRY_ENABLED else "OFF(기록만)")
 
     while True:
         try:
@@ -609,9 +623,9 @@ def zetro_poll_loop():
                 log.info("zetro 새 신호: %s %s type=%s tf=%s | 원본=%s", symbol, side, sig_type, tf,
                          json.dumps(sig, ensure_ascii=False)[:500])
 
-                rule_name = _match_rule(sig_type)
+                rule_name = _match_rule(sig)
                 if not rule_name:
-                    continue   # 아트로포스/스퀘어가 아니면 진입 안 함
+                    continue   # 정한 신호가 아니면 진입 안 함
                 rule = ZETRO_SIGNAL_RULES[rule_name]
                 if rule["symbols"] and _plain_symbol(symbol) not in rule["symbols"]:
                     log.info("%s 신호는 %s 종목 진입 안 함: %s", rule_name, symbol, sig)
@@ -637,6 +651,10 @@ def zetro_poll_loop():
                 if vol_usd < MIN_24H_VOLUME_USD:
                     log.info("%s 24시간 거래대금 $%s < $%s 이라 진입 안 함", inst_id,
                              f"{vol_usd:,.0f}", f"{MIN_24H_VOLUME_USD:,.0f}")
+                    continue
+
+                if not ZETRO_API_ENTRY_ENABLED:
+                    log.info("API 진입 꺼짐 — %s %s %s 신호 기록만 함", rule_name, symbol, side)
                     continue
 
                 log.info("zetro %s 신호로 진입 시도: %s %s (%s)", rule_name, symbol, side, tf)
