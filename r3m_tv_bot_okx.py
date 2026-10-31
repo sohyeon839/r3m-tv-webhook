@@ -80,6 +80,9 @@ ZETRO_MAX_SIGNAL_AGE_SEC = 180    # 기본: 3분보다 오래된 신호는 진�
 # OKX 해당 종목의 최근 24시간 거래대금이 이보다 작으면 진입 안 함
 MIN_24H_VOLUME_USD = 1_000_000
 
+# zetro 웹훅 수신 주소 (zetro 웹훅 설정에 넣을 주소의 뒷부분)
+ZETRO_HOOK_PATH = "/zetro-hook/5472118043e07db5"
+
 # 진입할 신호 규칙
 #   keywords   : 신호 종류(type) 이름에 이 단어가 들어가면 해당 신호로 인식 (대소문자 무시)
 #   symbols    : 진입 허용 종목 (None이면 전 종목)
@@ -754,6 +757,20 @@ def sl_watch_loop():
 class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
+
+    def do_POST(self):
+        # zetro 웹훅 수신 확인용 (지금은 받은 내용을 로그에만 남기고 진입은 안 함)
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(length) if length else b""
+        if self.path.rstrip("/") == ZETRO_HOOK_PATH:
+            log.info("zetro 웹훅 수신: %s", raw.decode("utf-8", errors="ignore")[:2000])
+            code, body = 200, b'{"ok":true}'
+        else:
+            code, body = 404, b""
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self):
         body = b'{"ok":true}'
