@@ -76,6 +76,10 @@ ZETRO_SIGNALS_URL = "https://ath.zetro.io/api/pub/v1/signals"
 ZETRO_POLL_SECONDS = 5            # 5초마다 조회 (분당 12회, 한도 60회)
 ZETRO_MAX_SIGNAL_AGE_SEC = 180    # 기본: 3분보다 오래된 신호는 진입 안 함
 
+# 거래대금 필터 (zetro 스크리너의 "거래대금 100만 달러 이상"과 같은 기준)
+# OKX 해당 종목의 최근 24시간 거래대금이 이보다 작으면 진입 안 함
+MIN_24H_VOLUME_USD = 1_000_000
+
 # 진입할 신호 규칙
 #   keywords   : 신호 종류(type) 이름에 이 단어가 들어가면 해당 신호로 인식 (대소문자 무시)
 #   symbols    : 진입 허용 종목 (None이면 전 종목)
@@ -321,6 +325,12 @@ class OkxExecutor:
     def get_mark_price(self, inst_id: str) -> float:
         data = self._request("GET", "/api/v5/market/ticker", params={"instId": inst_id})
         return float(data["data"][0]["last"])
+
+    def get_24h_volume_usd(self, inst_id: str) -> float:
+        """최근 24시간 거래대금(USD). volCcy24h(코인 수량) × 현재가."""
+        data = self._request("GET", "/api/v5/market/ticker", params={"instId": inst_id})
+        t = data["data"][0]
+        return float(t.get("volCcy24h") or 0) * float(t.get("last") or 0)
 
     def calc_qty(self, inst_id: str, notional_usdt: float, ref_price: float) -> float:
         inst = self.get_instrument(inst_id)
@@ -571,7 +581,8 @@ def zetro_poll_loop():
                 symbol = sig.get("symbol", "")
                 at = sig.get("at") or 0
 
-                log.info("zetro 새 신호: %s %s type=%s tf=%s", symbol, side, sig_type, tf)
+                log.info("zetro 새 신호: %s %s type=%s tf=%s | 원본=%s", symbol, side, sig_type, tf,
+                         json.dumps(sig, ensure_ascii=False)[:500])
 
                 rule_name = _match_rule(sig_type)
                 if not rule_name:
@@ -590,6 +601,17 @@ def zetro_poll_loop():
                 if age_sec is None or age_sec > rule["max_age_sec"]:
                     log.info("%s 신호가 %s초 지나서 스킵: %s", rule_name,
                              f"{age_sec:.0f}" if age_sec is not None else "?", sig)
+                    continue
+
+                inst_id = normalize_symbol(symbol)
+                try:
+                    vol_usd = _executor.get_24h_volume_usd(inst_id)
+                except Exception as e:  # noqa: BLE001
+                    log.info("%s 거래대금 조회 실패(OKX에 없는 종목일 수 있음) — 진입 안 함: %s", inst_id, format_okx_error(e))
+                    continue
+                if vol_usd < MIN_24H_VOLUME_USD:
+                    log.info("%s 24시간 거래대금 $%s < $%s 이라 진입 안 함", inst_id,
+                             f"{vol_usd:,.0f}", f"{MIN_24H_VOLUME_USD:,.0f}")
                     continue
 
                 log.info("zetro %s 신호로 진입 시도: %s %s (%s)", rule_name, symbol, side, tf)
