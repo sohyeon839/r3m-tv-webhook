@@ -94,6 +94,35 @@ ZETRO_HOOK_PATH = "/zetro-hook/5472118043e07db5"
 # ----------------------------------------------------------------------------
 HOOK_ENTRY_ENABLED = True
 
+# ----------------------------------------------------------------------------
+# zetro 스크리너(/screener) 진입 — 홈페이지 스크리너 화면과 같은 결과만 받음
+# ----------------------------------------------------------------------------
+SCREENER_ENTRY_ENABLED = True
+ZETRO_SCREENER_URL = "https://ath.zetro.io/api/pub/v1/screener"
+SCREENER_POLL_SECONDS = 10       # 스크리너는 15초마다 갱신 → 10초마다 확인 (분당 6회)
+
+# 화면 스크리너 설정과 똑같이
+SCREENER_FILTERS = {
+    "minTurnover": "1e6",    # 거래대금 100만 달러 이상
+    "weak": "hide",          # 힘 없는 장 거르기
+    "noise": "hide",         # 노이즈 제거 (보통)
+    "ex": "okx",             # OKX에 있는 종목만
+    # show 를 안 넣으면 위험·주의 코인은 기본으로 빠짐
+}
+
+SCREENER_RULES = {
+    "아트로포스": {
+        "find": "atropos",          # 스크리너 조건 id에 이 글자가 들어간 것 (시작할 때 자동으로 찾음)
+        "id": None,                 # 자동으로 못 찾으면 여기에 정확한 id를 적으세요
+        "tf": "5m",
+        "symbols": None,            # 전 종목
+        "max_age_sec": 60,          # 뜬 지 1분 이내만
+        "leverage": 3,              # 증거금 100 × 3배
+        "tp_pct": 0.08,             # 증거금 대비 +8% 익절
+        "sl_pct": 0.06,             # 증거금 대비 -6% 손절
+    },
+}
+
 HOOK_RULES = {
     "cluster": {            # 클러스터 저항/지지 닿음
         "symbols": None,
@@ -153,7 +182,7 @@ ZETRO_SIGNAL_RULES = {
         "leverage": 3,              # 증거금 100 × 3배 (클러스터와 동일)
         "tp_pct": 0.08,             # 증거금 대비 +8% 익절
         "sl_pct": 0.06,             # 증거금 대비 -6% 손절
-        "api_entry": True,          # 전체 코인 알림이 안 돼서 API로 진입 (거래대금 100만 달러 이상만)
+        "api_entry": False,         # 아트로포스는 아래 스크리너(/screener)로 진입
     },
     "스퀘어": {
         "type": "square",
@@ -722,6 +751,121 @@ def zetro_poll_loop():
 
 
 # ----------------------------------------------------------------------------
+# zetro 스크리너 조회 루프
+# ----------------------------------------------------------------------------
+
+def _collect_screener_ids(obj, out: set, under_screener: bool = False) -> None:
+    """/types 응답에서 'screener' 칸 아래에 있는 조건 id들을 모음."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            flag = under_screener or str(k).lower() == "screener"
+            if flag and str(k).lower() in ("id", "screener") and isinstance(v, str):
+                out.add(v)
+            _collect_screener_ids(v, out, flag)
+    elif isinstance(obj, list):
+        for v in obj:
+            if under_screener and isinstance(v, str):
+                out.add(v)
+            _collect_screener_ids(v, out, under_screener)
+
+
+def resolve_screener_ids() -> None:
+    try:
+        resp = requests.get(ZETRO_SIGNALS_URL.replace("/signals", "/types"),
+                            headers={"Authorization": f"Bearer {ZETRO_API_KEY}"}, timeout=10)
+        data = resp.json()
+    except Exception as e:  # noqa: BLE001
+        log.warning("스크리너 조건 목록 조회 실패: %s", e)
+        data = {}
+    ids: set = set()
+    _collect_screener_ids(data, ids)
+    log.info("스크리너 조건 id 목록: %s", ", ".join(sorted(ids)) or "(못 찾음)")
+    for name, rule in SCREENER_RULES.items():
+        if rule.get("id"):
+            continue
+        matches = sorted(i for i in ids if rule["find"].lower() in i.lower())
+        # 롱/숏이 따로 있어도 같이 받도록 쉼표로 묶음 (최대 4개)
+        rule["id"] = ",".join(matches[:4]) if matches else rule["find"]
+        log.info("스크리너 %s 조건 id = %s%s", name, rule["id"], "" if matches else " (목록에 없어 기본값 사용)")
+
+
+def _screener_fetch(cond_id: str, tf: str) -> list:
+    params = {"type": cond_id, "tf": tf, "limit": "100", **SCREENER_FILTERS}
+    resp = requests.get(ZETRO_SCREENER_URL, headers={"Authorization": f"Bearer {ZETRO_API_KEY}"},
+                        params=params, timeout=10)
+    if resp.status_code != 200:
+        raise RuntimeError(f"스크리너 응답 {resp.status_code}: {resp.text[:200]}")
+    return resp.json().get("items", []) or []
+
+
+def screener_poll_loop():
+    resolve_screener_ids()
+    with _state_lock:
+        seen_list = _state.setdefault("screener_seen", [])
+    seen = set(seen_list)
+    first_run = {name: True for name in SCREENER_RULES}
+    error_streak = 0
+    log.info("스크리너 조회 시작 (%s초 간격, 필터: %s)", SCREENER_POLL_SECONDS, SCREENER_FILTERS)
+
+    while True:
+        try:
+            new_keys = []
+            now_ms = time.time() * 1000
+            for name, rule in SCREENER_RULES.items():
+                items = _screener_fetch(rule["id"], rule["tf"])
+                for it in sorted(items, key=lambda x: x.get("at") or 0):
+                    symbol = str(it.get("symbol", "")).upper()
+                    side = str(it.get("side", "")).lower()
+                    at = it.get("at") or 0
+                    key = f"{name}|{symbol}|{it.get('kind')}|{it.get('tf')}|{at}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    new_keys.append(key)
+                    if first_run[name]:
+                        continue   # 봇 켤 때 이미 떠 있던 건 진입 안 함
+
+                    log.info("스크리너 %s 새 종목: %s %s | 원본=%s", name, symbol, side,
+                             json.dumps(it, ensure_ascii=False)[:400])
+                    if rule["symbols"] and symbol not in rule["symbols"]:
+                        continue
+                    if side not in ("long", "short") or not symbol:
+                        continue
+                    age = (now_ms - at) / 1000 if at else None
+                    if age is None or age > rule["max_age_sec"]:
+                        log.info("스크리너 %s: %s 뜬 지 %s초라 진입 안 함", name, symbol,
+                                 f"{age:.0f}" if age is not None else "?")
+                        continue
+                    if not SCREENER_ENTRY_ENABLED:
+                        log.info("스크리너 진입 꺼짐 — %s %s %s 기록만 함", name, symbol, side)
+                        continue
+                    log.info("스크리너 %s 신호로 진입 시도: %s %s", name, symbol, side)
+                    try:
+                        enter_position(symbol, side, rule["leverage"], rule["tp_pct"], rule["sl_pct"])
+                    except Exception as e:  # noqa: BLE001
+                        log.error("스크리너 진입 처리 실패: %s", e)
+                first_run[name] = False
+
+            if new_keys:
+                with _state_lock:
+                    seen_list = _state.setdefault("screener_seen", [])
+                    seen_list.extend(new_keys)
+                    if len(seen_list) > 2000:
+                        del seen_list[:-2000]
+                        seen.intersection_update(seen_list)
+                    save_state(_state)
+            if error_streak >= 3:
+                notify("✅ 스크리너 연결 복구", "스크리너 조회가 다시 정상 작동합니다.")
+            error_streak = 0
+        except Exception as e:  # noqa: BLE001
+            error_streak += 1
+            log.warning("스크리너 조회 실패(%d회 연속): %s", error_streak, e)
+            if error_streak == 3:
+                notify("⚠️ 스크리너 조회 실패", f"3회 연속 실패\n사유: {str(e)[:200]}")
+        time.sleep(SCREENER_POLL_SECONDS)
+
+
+# ----------------------------------------------------------------------------
 # zetro 웹훅 신호 처리
 # ----------------------------------------------------------------------------
 
@@ -966,6 +1110,7 @@ def main():
     threading.Thread(target=sl_watch_loop, daemon=True).start()
     if ZETRO_API_KEY:
         threading.Thread(target=zetro_poll_loop, daemon=True).start()
+        threading.Thread(target=screener_poll_loop, daemon=True).start()
     else:
         log.warning("ZETRO_API_KEY가 없어서 zetro 신호 조회는 꺼둔 상태로 시작합니다.")
         notify("⚠️ zetro 신호 조회 꺼짐", "Railway Variables에 ZETRO_API_KEY를 넣어주세요.")
