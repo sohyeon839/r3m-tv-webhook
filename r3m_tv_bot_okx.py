@@ -10,7 +10,7 @@ ath.zetro.io 의 신호 API(/api/pub/v1/signals)를 5초마다 조회해서
 안전장치
 --------
 - 봇을 켤 때 이미 떠 있던 신호로는 진입하지 않음
-- 1분 넘게 지난 신호는 진입하지 않음
+- 3분 넘게 지난 신호는 진입하지 않음
 - 같은 신호로 두 번 진입하지 않음 (재시작해도 기억)
 - ZETRO_API_KEY 가 없으면 신호 조회만 꺼진 채로 봇은 정상 실행
 
@@ -41,7 +41,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -65,7 +65,7 @@ SYMBOL_NOTIONAL_OVERRIDE = {
 
 MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추가 진입 안 함
 SYMBOL_MAX_STACK_OVERRIDE = {}
-MAX_DAILY_SL_COUNT = 10   # 하루 손절 10회 넘으면 신규 진입 중지
+MAX_DAILY_SL_COUNT = 10   # 하루(한국시간 0시 기준) 손절 10회가 되면 그날은 신규 진입 중지
 
 # ----------------------------------------------------------------------------
 # zetro 신호 설정
@@ -185,8 +185,12 @@ def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+KST = timezone(timedelta(hours=9))
+
+
 def _today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # 하루 기준을 한국시간 0시로 (손절 횟수, 승패, 누적 손익 모두)
+    return datetime.now(KST).strftime("%Y-%m-%d")
 
 
 def _daily(key: str, defaults: dict) -> dict:
@@ -207,6 +211,11 @@ def record_sl_hit() -> None:
     d["count"] += 1
     save_state(_state)
     log.warning("오늘 손절 %d회째 발생 (한도 %d회)", d["count"], MAX_DAILY_SL_COUNT)
+    if d["count"] == MAX_DAILY_SL_COUNT:
+        notify("⛔ 오늘 자동매매 중지",
+               f"오늘 손절 {MAX_DAILY_SL_COUNT}회에 도달해서 신규 진입을 멈춥니다.\n"
+               f"이미 열린 포지션은 익절/손절 그대로 유지되고,\n"
+               f"내일 한국시간 0시에 자동으로 다시 시작해요.")
 
 
 def record_trade_result(success: bool) -> dict:
