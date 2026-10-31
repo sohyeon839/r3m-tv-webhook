@@ -52,15 +52,15 @@ import requests
 # 진입 설정 — 여기를 원하는 값으로 바꾸세요
 # ----------------------------------------------------------------------------
 
-# 포지션 규모 기준 (실제 증거금 = 포지션 규모 / 레버리지)
-POSITION_NOTIONAL_USDT = 500.0   # 증거금 100 USDT × 5배
-LEVERAGE = 5
-TAKE_PROFIT_PCT = 0.06   # 증거금 대비 +6% 익절 (가격 +1.2%)
-STOP_LOSS_PCT = 0.08     # 증거금 대비 -8% 손절 (가격 -1.6%)
+# 증거금 기준 (포지션 규모 = 증거금 × 레버리지)
+MARGIN_USDT = 100.0      # 진입 1번당 증거금
+LEVERAGE = 5             # 기본 레버리지 (신호별로 아래 규칙에서 따로 지정 가능)
+TAKE_PROFIT_PCT = 0.06   # 증거금 대비 +6% 익절
+STOP_LOSS_PCT = 0.08     # 증거금 대비 -8% 손절
 
-# 종목별로 포지션 규모를 다르게 하고 싶을 때만 추가
-SYMBOL_NOTIONAL_OVERRIDE = {
-    # "BTC-USDT-SWAP": 1000.0,
+# 종목별로 증거금을 다르게 하고 싶을 때만 추가
+SYMBOL_MARGIN_OVERRIDE = {
+    # "BTC-USDT-SWAP": 200.0,
 }
 
 MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추가 진입 안 함
@@ -81,15 +81,26 @@ ZETRO_MAX_SIGNAL_AGE_SEC = 180    # 기본: 3분보다 오래된 신호는 진�
 #   symbols    : 진입 허용 종목 (None이면 전 종목)
 #   max_age_sec: 신호가 뜬 뒤 이 시간(초) 안에만 진입
 ZETRO_SIGNAL_RULES = {
+    "급락매수다이아": {
+        "keywords": ["급락매수다이아", "급락 매수", "급락매수", "dip", "crash", "plunge", "dump", "sharp_drop", "drop_buy"],
+        "symbols": None,            # 전 종목
+        "tfs": {"5m"},              # 5분봉만
+        "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
+        "leverage": 3,              # 증거금 100 × 3배 = 포지션 300 USDT
+    },
     "아트로포스": {
         "keywords": ["atropos", "아트로포스"],
         "symbols": None,            # BTC 포함 전 종목
+        "tfs": {"5m"},              # 5분봉만
         "max_age_sec": 60,          # 뜬 지 1분 이내만
+        "leverage": LEVERAGE,
     },
     "스퀘어": {
         "keywords": ["square", "스퀘어"],
         "symbols": {"BTCUSDT"},     # BTC만
+        "tfs": {"5m"},              # 5분봉만
         "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
+        "leverage": LEVERAGE,
     },
 }
 
@@ -415,7 +426,7 @@ def sync_positions_from_exchange() -> None:
 # 진입 처리
 # ----------------------------------------------------------------------------
 
-def enter_position(symbol: str, side_raw: str) -> None:
+def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE) -> None:
     inst_id = normalize_symbol(symbol)
     side = "S" if side_raw == "short" else "L"
 
@@ -449,11 +460,11 @@ def enter_position(symbol: str, side_raw: str) -> None:
             save_state(_state)
             return get_trade_stats()
 
-    notional = SYMBOL_NOTIONAL_OVERRIDE.get(inst_id, POSITION_NOTIONAL_USDT)
+    notional = SYMBOL_MARGIN_OVERRIDE.get(inst_id, MARGIN_USDT) * leverage
     try:
         ref_price = _executor.get_mark_price(inst_id)
         qty = _executor.open_position(inst_id, side, notional, ref_price,
-                                      LEVERAGE, TAKE_PROFIT_PCT, STOP_LOSS_PCT)
+                                      leverage, TAKE_PROFIT_PCT, STOP_LOSS_PCT)
     except Exception as e:  # noqa: BLE001
         stats = _release()
         log.warning("%s 진입 중 예외 발생: %s", inst_id, e)
@@ -515,7 +526,18 @@ def _zetro_fetch() -> list:
     return resp.json().get("items", []) or []
 
 
+def zetro_log_types() -> None:
+    """시작할 때 zetro 신호 종류 목록을 한 번 받아서 로그에 남김 (type 이름 확인용)."""
+    try:
+        resp = requests.get(ZETRO_SIGNALS_URL.replace("/signals", "/types"),
+                            headers={"Authorization": f"Bearer {ZETRO_API_KEY}"}, timeout=10)
+        log.info("zetro 신호 종류 목록(%s): %s", resp.status_code, resp.text[:3000])
+    except Exception as e:  # noqa: BLE001
+        log.info("zetro 신호 종류 목록 조회 실패(무시): %s", e)
+
+
 def zetro_poll_loop():
+    zetro_log_types()
     with _state_lock:
         seen_list = _state.setdefault("zetro_seen", [])
     seen = set(seen_list)
@@ -558,6 +580,9 @@ def zetro_poll_loop():
                 if rule["symbols"] and _plain_symbol(symbol) not in rule["symbols"]:
                     log.info("%s 신호는 %s 종목 진입 안 함: %s", rule_name, symbol, sig)
                     continue
+                if rule.get("tfs") and tf.lower() not in rule["tfs"]:
+                    log.info("%s 신호가 %s봉이라 진입 안 함 (5분봉만): %s", rule_name, tf, sig)
+                    continue
                 if side not in ("long", "short") or not symbol:
                     log.info("zetro 신호 형식 불명확(스킵): %s", sig)
                     continue
@@ -569,7 +594,7 @@ def zetro_poll_loop():
 
                 log.info("zetro %s 신호로 진입 시도: %s %s (%s)", rule_name, symbol, side, tf)
                 try:
-                    enter_position(symbol, side)
+                    enter_position(symbol, side, rule.get("leverage", LEVERAGE))
                 except Exception as e:  # noqa: BLE001
                     log.error("zetro 신호 진입 처리 실패: %s", e)
 
@@ -703,8 +728,8 @@ def main():
     _state = load_state()
     sync_positions_from_exchange()
 
-    log.info("zetro OKX 봇 시작 | notional=%sUSDT leverage=%sx TP=+%.0f%% SL=-%.0f%%",
-             POSITION_NOTIONAL_USDT, LEVERAGE, TAKE_PROFIT_PCT * 100, STOP_LOSS_PCT * 100)
+    log.info("zetro OKX 봇 시작 | 증거금=%sUSDT 기본레버리지=%sx TP=+%.0f%% SL=-%.0f%%",
+             MARGIN_USDT, LEVERAGE, TAKE_PROFIT_PCT * 100, STOP_LOSS_PCT * 100)
 
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=sl_watch_loop, daemon=True).start()
