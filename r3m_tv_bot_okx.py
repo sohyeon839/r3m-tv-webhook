@@ -92,6 +92,28 @@ ZETRO_SIGNAL_RULES = {
         "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
         "leverage": 3,              # 증거금 100 × 3배 = 포지션 300 USDT
     },
+    "클러스터 저항": {
+        "keywords": ["cluster_res", "cluster_resistance", "클러스터 저항"],
+        "symbols": None,            # 전 종목
+        "tfs": {"5m"},              # 5분봉만
+        "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
+        "leverage": LEVERAGE,
+    },
+    "클러스터 지지": {
+        "keywords": ["cluster_sup", "cluster_support", "클러스터 지지"],
+        "symbols": None,            # 전 종목
+        "tfs": {"5m"},              # 5분봉만
+        "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
+        "leverage": LEVERAGE,
+    },
+    # 이름이 위 둘처럼 나뉘지 않고 "cluster_touch" 하나로 오는 경우 대비
+    "클러스터": {
+        "keywords": ["cluster", "클러스터"],
+        "symbols": None,
+        "tfs": {"5m"},
+        "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
+        "leverage": LEVERAGE,
+    },
     "아트로포스": {
         "keywords": ["atropos", "아트로포스"],
         "symbols": None,            # BTC 포함 전 종목
@@ -641,9 +663,12 @@ def zetro_poll_loop():
 # 정기 리포트 / 익절·손절 감시
 # ----------------------------------------------------------------------------
 
+HEARTBEAT_MINUTES = 5   # 정기 리포트 주기(분)
+
+
 def heartbeat_loop():
+    time.sleep(20)   # 시작 직후 포지션 동기화가 끝나길 잠깐 기다렸다가 첫 리포트 전송
     while True:
-        time.sleep(5 * 60)
         try:
             summary = _executor.get_account_summary()
             upl = summary["unrealized_pnl"]
@@ -676,6 +701,7 @@ def heartbeat_loop():
                    f"📌 보유 포지션\n{pos_text}")
         except Exception as e:  # noqa: BLE001
             log.warning("하트비트 알림 실패: %s", e)
+        time.sleep(HEARTBEAT_MINUTES * 60)
 
 
 def sl_watch_loop():
