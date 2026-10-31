@@ -117,7 +117,7 @@ SCREENER_RULES = {
         "tf": "5m",
         "symbols": None,            # 전 종목
         "max_age_sec": 60,          # 뜬 지 1분 이내만
-        "leverage": 3,              # 증거금 100 × 3배
+        "leverage": 5,              # 증거금 100 × 5배 = 포지션 500 USDT
         "tp_pct": 0.08,             # 증거금 대비 +8% 익절
         "sl_pct": 0.06,             # 증거금 대비 -6% 손절
     },
@@ -128,7 +128,7 @@ HOOK_RULES = {
         "symbols": None,
         "intervals": {"5"},
         "max_age_sec": 180,
-        "leverage": 3,      # 증거금 100 × 3배 = 포지션 300 USDT
+        "leverage": 5,      # 증거금 100 × 5배 = 포지션 500 USDT
         "tp_pct": 0.08,     # 증거금 대비 +8% 익절
         "sl_pct": 0.06,     # 증거금 대비 -6% 손절
     },
@@ -142,7 +142,7 @@ HOOK_RULES = {
         "symbols": None,
         "intervals": {"5"},
         "max_age_sec": 180,
-        "leverage": 3,
+        "leverage": 5,
     },
     "square": {             # 스퀘어 (BTC만)
         "symbols": {"BTCUSDT"},
@@ -171,7 +171,7 @@ ZETRO_SIGNAL_RULES = {
         "symbols": None,            # 전 종목
         "tfs": {"5m"},
         "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
-        "leverage": 3,              # 증거금 100 × 3배
+        "leverage": 5,              # 증거금 100 × 5배 = 포지션 500 USDT
     },
     "아트로포스": {
         "type": "atropos",
@@ -179,7 +179,7 @@ ZETRO_SIGNAL_RULES = {
         "symbols": None,            # BTC 포함 전 종목
         "tfs": {"5m"},
         "max_age_sec": 60,          # 뜬 지 1분 이내만
-        "leverage": 3,              # 증거금 100 × 3배 (클러스터와 동일)
+        "leverage": 5,              # 증거금 100 × 5배 = 포지션 500 USDT
         "tp_pct": 0.08,             # 증거금 대비 +8% 익절
         "sl_pct": 0.06,             # 증거금 대비 -6% 손절
         "api_entry": False,         # 아트로포스는 아래 스크리너(/screener)로 진입
