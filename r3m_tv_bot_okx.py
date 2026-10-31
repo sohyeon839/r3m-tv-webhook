@@ -1,36 +1,31 @@
 """
-TradingView Webhook Auto-Trading Bot (OKX) — 바이비트 봇(r3m_tv_bot.py)과
-완전히 독립적인 프로그램입니다. 구조와 웹훅 형식은 동일하고, 거래소만
-OKX로 바뀐 버전입니다.
-  
+zetro(ath.zetro.io) 신호 자동매매 봇 (OKX)
+
 동작 방식
 ---------
-트레이딩뷰 알림의 "메시지(Message)" 칸에 아래와 같은 JSON을 넣어두면,
-그 알림이 울릴 때마다 이 봇이 받아서 그대로 진입/청산합니다.
- 
-  진입(롱): {"secret": "본인이_정한_값", "symbol": "{{ticker}}", "side": "long", "action": "entry"}
-  진입(숏): {"secret": "본인이_정한_값", "symbol": "{{ticker}}", "side": "short", "action": "entry"}
-  청산    : {"secret": "본인이_정한_값", "symbol": "{{ticker}}", "action": "exit"}
+ath.zetro.io 의 신호 API(/api/pub/v1/signals)를 5초마다 조회해서
+새 신호가 뜨면 OKX에서 바로 진입합니다. 청산은 진입할 때 같이 걸어두는
+익절(TP)/손절(SL)로 자동 처리됩니다.
 
-symbol은 "BTCUSDT" 형태로 보내면 내부적으로 OKX 표기법인 "BTC-USDT-SWAP"으로
-자동 변환합니다.
+안전장치
+--------
+- 봇을 켤 때 이미 떠 있던 신호로는 진입하지 않음
+- 1분 넘게 지난 신호는 진입하지 않음
+- 같은 신호로 두 번 진입하지 않음 (재시작해도 기억)
+- ZETRO_API_KEY 가 없으면 신호 조회만 꺼진 채로 봇은 정상 실행
 
 중요한 전제
 ------------
-1. OKX 계정의 포지션 모드가 반드시 "단방향(one-way/net)" 모드여야 합니다.
-   OKX 웹/앱 -> 선물(Perpetual) 설정에서 확인/변경하세요. 헤지 모드면 주문이
-   거부됩니다.
-2. 이 컴�터/서버가 외부에서 접속 가능한 주소를 가지고 있어야 트레이딩뷰
-   웹훅을 받을 수 있습니다. Railway에 배포했다면 자동으로 공개 주소가
-   생깁니다.
+OKX 계정의 포지션 모드가 반드시 "단방향(one-way/net)" 모드여야 합니다.
 
 필요 패키지
 ------------
 pip install requests
 
-환경 변수
-----------
+환경 변수 (Railway Variables)
+-----------------------------
 OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE : OKX API 키 (Trade 권한 필요)
+ZETRO_API_KEY                                    : zetro API 키 (ztk_로 시작)
 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID             : (선택) 텔레그램 알림용
 """
 
@@ -40,7 +35,6 @@ import base64
 import hmac
 import hashlib
 import json
-import re
 import logging
 import math
 import os
@@ -55,39 +49,55 @@ from typing import Optional
 import requests
 
 # ----------------------------------------------------------------------------
-# 설정 — 여기를 원하는 값으로 바꾸세요 (바이비트 봇과 동일한 기본값)
+# 진입 설정 — 여기를 원하는 값으로 바꾸세요
 # ----------------------------------------------------------------------------
 
-WEBHOOK_PORT = int(os.environ.get("PORT", 8789))
-WEBHOOK_SECRET = "0413"   # 반드시 본인만 아는 값으로 바꾸세요
-POSITION_NOTIONAL_USDT = 3000.0
-LEVERAGE = 10
-TAKE_PROFIT_PCT = 0.09   # 익절: 증거금 대비 수익률 +0.7%
-STOP_LOSS_PCT = 0.005    # 손절: 진입가 대비 -0.5%
+# 포지션 규모 기준 (실제 증거금 = 포지션 규모 / 레버리지)
+POSITION_NOTIONAL_USDT = 500.0   # 증거금 100 USDT × 5배
+LEVERAGE = 5
+TAKE_PROFIT_PCT = 0.06   # 증거금 대비 +6% 익절 (가격 +1.2%)
+STOP_LOSS_PCT = 0.08     # 증거금 대비 -8% 손절 (가격 -1.6%)
 
-# 파랑빔 전용 설정
-BLUE_BEAM_NOTIONAL_USDT = 1500.0
-BLUE_BEAM_LEVERAGE = 10
-CLOUD_TOUCH_LEVERAGE = 100  # 구름 터치는 레버리지 5배
-CLOUD_TOUCH_NOTIONAL_USDT = 500.0  # 실제 증거금 = 750 / 5 = 150 USDT
-CLOUD_TOUCH_TP_PCT = 0.15   # 구름대매매 전용 익절: 증거금 대비 +15%
-CLOUD_TOUCH_SL_PCT = 0.08  # 구름대매매 전용 손절: 증거금 대비 -0.5%
-
-# (여기 값은 "포지션 규모" 기준이라, 실제 증거금 300 USDT를 원하면 300 × 레버리지(10) = 3000으로 설정)
+# 종목별로 포지션 규모를 다르게 하고 싶을 때만 추가
 SYMBOL_NOTIONAL_OVERRIDE = {
-    "BTC-USDT-SWAP": 3000.0,  # 실제 증거금 = 3000 / 10 = 300 USDT
-    "ETH-USDT-SWAP": 3000.0,  # 실제 증거금 = 3000 / 10 = 300 USDT
+    # "BTC-USDT-SWAP": 1000.0,
 }
 
-MAX_STACK_POSITIONS = 1  # 모든 종목 공통: 이미 포지션이 있으면 같은 신호가 여러 번 울려도 추가 진입 안 함
-
-# 특정 종목만 다른 한도를 쓰고 싶을 때만 여기에 추가 (지금은 기본값 1을 모든 종목에 적용 중)
+MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추가 진입 안 함
 SYMBOL_MAX_STACK_OVERRIDE = {}
+MAX_DAILY_SL_COUNT = 10   # 하루 손절 10회 넘으면 신규 진입 중지
 
-MAX_DAILY_SL_COUNT = 10   # 하루 손절 5회 넘으면 신규 진입 중지
-BLUE_BEAM_TP_PCT = 0.15   # 증거금 대비 +15% 익절
-BLUE_BEAM_SL_PCT = 0.10   # 증거금 대비 -10% 손절
+# ----------------------------------------------------------------------------
+# zetro 신호 설정
+# ----------------------------------------------------------------------------
 
+ZETRO_API_KEY = os.environ.get("ZETRO_API_KEY", "")
+ZETRO_SIGNALS_URL = "https://ath.zetro.io/api/pub/v1/signals"
+ZETRO_POLL_SECONDS = 5            # 5초마다 조회 (분당 12회, 한도 60회)
+ZETRO_MAX_SIGNAL_AGE_SEC = 180    # 기본: 3분보다 오래된 신호는 진입 안 함
+
+# 진입할 신호 규칙
+#   keywords   : 신호 종류(type) 이름에 이 단어가 들어가면 해당 신호로 인식 (대소문자 무시)
+#   symbols    : 진입 허용 종목 (None이면 전 종목)
+#   max_age_sec: 신호가 뜬 뒤 이 시간(초) 안에만 진입
+ZETRO_SIGNAL_RULES = {
+    "아트로포스": {
+        "keywords": ["atropos", "아트로포스"],
+        "symbols": None,            # BTC 포함 전 종목
+        "max_age_sec": 60,          # 뜬 지 1분 이내만
+    },
+    "스퀘어": {
+        "keywords": ["square", "스퀘어"],
+        "symbols": {"BTCUSDT"},     # BTC만
+        "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
+    },
+}
+
+# ----------------------------------------------------------------------------
+# 기타
+# ----------------------------------------------------------------------------
+
+PORT = int(os.environ.get("PORT", 8789))   # Railway 상태 확인용
 STATE_FILE = Path("r3m_tv_okx_state.json")
 OKX_BASE_URL = "https://www.okx.com"
 TD_MODE = "cross"  # 교차 마진. 격리 원하면 "isolated"
@@ -96,11 +106,10 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("r3m_tv_okx_bot")
+log = logging.getLogger("zetro_okx_bot")
+
 
 class OkxApiError(RuntimeError):
-    """OKX가 code != '0' 으로 응답했을 때 발생. sCode/sMsg를 따로 보관해서
-    나중에 사람이 읽기 편한 한글 메시지로 바꿀 수 있게 함."""
     def __init__(self, data: dict):
         self.data = data
         first = (data.get("data") or [{}])[0]
@@ -121,7 +130,6 @@ OKX_ERROR_MESSAGES = {
     "51006": "주문 가격이 허용 범위를 벗어남",
     "51008": "증거금(USDT) 부족",
     "51009": "주문 기능이 일시적으로 제한됨(거래소 측)",
-    "51023": "청산할 포지션이 이미 없음",
     "51119": "잔고 부족으로 주문 실패",
     "51127": "사용 가능한 잔고가 0",
     "51131": "잔고 부족",
@@ -134,7 +142,6 @@ OKX_ERROR_MESSAGES = {
 
 
 def format_okx_error(e: Exception) -> str:
-    """OKX API 에러를 사람이 읽기 편한 한글 한 줄로 정리."""
     if isinstance(e, OkxApiError):
         known = OKX_ERROR_MESSAGES.get(e.scode)
         if known:
@@ -142,6 +149,7 @@ def format_okx_error(e: Exception) -> str:
         if e.smsg:
             return e.smsg.strip()
     return str(e)
+
 
 def notify(title: str, message: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -156,6 +164,14 @@ def notify(title: str, message: str) -> None:
         log.warning("텔레그램 알림 전송 실패: %s", e)
 
 
+# ----------------------------------------------------------------------------
+# 상태 저장 / 일일 통계
+# ----------------------------------------------------------------------------
+
+_state: Optional[dict] = None
+_state_lock = threading.Lock()
+
+
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
@@ -168,79 +184,56 @@ def load_state() -> dict:
 def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
+
+def _today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _daily(key: str, defaults: dict) -> dict:
+    today = _today()
+    d = _state.setdefault(key, {"date": today, **defaults})
+    if d.get("date") != today:
+        d.clear()
+        d.update({"date": today, **defaults})
+    return d
+
+
 def check_daily_sl_limit() -> bool:
-    """오늘 손절 횟수가 한도를 넘었으면 True(진입 중지)를 돌려줍니다."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    daily = _state.setdefault("daily_sl", {"date": today, "count": 0})
-    if daily.get("date") != today:
-        daily["date"] = today
-        daily["count"] = 0
-        save_state(_state)
-    return daily.get("count", 0) >= MAX_DAILY_SL_COUNT
+    return _daily("daily_sl", {"count": 0})["count"] >= MAX_DAILY_SL_COUNT
 
 
 def record_sl_hit() -> None:
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    daily = _state.setdefault("daily_sl", {"date": today, "count": 0})
-    if daily.get("date") != today:
-        daily["date"] = today
-        daily["count"] = 0
-    daily["count"] += 1
+    d = _daily("daily_sl", {"count": 0})
+    d["count"] += 1
     save_state(_state)
-    log.warning("오늘 손절 %d회째 발생 (한도 %d회)", daily["count"], MAX_DAILY_SL_COUNT)
+    log.warning("오늘 손절 %d회째 발생 (한도 %d회)", d["count"], MAX_DAILY_SL_COUNT)
+
 
 def record_trade_result(success: bool) -> dict:
-    """진입 성공/실패를 오늘 날짜 기준으로 누적 기록하고, 최신 카운트를 반환합니다."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    stats = _state.setdefault("daily_trade_stats", {"date": today, "success": 0, "fail": 0})
-    if stats.get("date") != today:
-        stats["date"] = today
-        stats["success"] = 0
-        stats["fail"] = 0
-    if success:
-        stats["success"] += 1
-    else:
-        stats["fail"] += 1
+    d = _daily("daily_trade_stats", {"success": 0, "fail": 0})
+    d["success" if success else "fail"] += 1
     save_state(_state)
-    return stats
+    return d
+
 
 def get_trade_stats() -> dict:
-    """오늘 성공/실패 카운트를 증가시키지 않고 현재 값만 조회합니다."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    stats = _state.setdefault("daily_trade_stats", {"date": today, "success": 0, "fail": 0})
-    if stats.get("date") != today:
-        stats["date"] = today
-        stats["success"] = 0
-        stats["fail"] = 0
-        save_state(_state)
-    return stats
-  
+    return _daily("daily_trade_stats", {"success": 0, "fail": 0})
+
+
 def record_win_loss(is_win: bool) -> dict:
-    """청산 결과(익절/손절)를 오늘 날짜 기준으로 누적 기록하고, 최신 카운트를 반환합니다."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    stats = _state.setdefault("daily_win_loss", {"date": today, "win": 0, "loss": 0})
-    if stats.get("date") != today:
-        stats["date"] = today
-        stats["win"] = 0
-        stats["loss"] = 0
-    if is_win:
-        stats["win"] += 1
-    else:
-        stats["loss"] += 1
+    d = _daily("daily_win_loss", {"win": 0, "loss": 0})
+    d["win" if is_win else "loss"] += 1
     save_state(_state)
-    return stats
+    return d
+
 
 def record_daily_pnl(pnl: float) -> dict:
-    """오늘 실현 손익(USDT)을 누적으로 기록하고, 최신 합계를 반환합니다."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    daily = _state.setdefault("daily_pnl", {"date": today, "total": 0.0})
-    if daily.get("date") != today:
-        daily["date"] = today
-        daily["total"] = 0.0
-    daily["total"] += pnl
+    d = _daily("daily_pnl", {"total": 0.0})
+    d["total"] += pnl
     save_state(_state)
-    return daily
- 
+    return d
+
+
 def normalize_symbol(sym: str) -> str:
     """'BTCUSDT', 'BTCUSDT.P', 'BTC-USDT-SWAP' 등을 'BTC-USDT-SWAP'으로 통일."""
     sym = (sym or "").upper().strip()
@@ -255,46 +248,8 @@ def normalize_symbol(sym: str) -> str:
     else:
         base, quote = sym, "USDT"
     return f"{base}-{quote}-SWAP"
-  
-def extract_json_block(text: str) -> Optional[str]:
-    """
-    문자열 안에서 제일 처음 나오는 '{' 부터, 그것과 짝이 맞는 '}' 까지를
-    정확히 찾아서 돌려줍니다. "{{ticker}}" 처럼 중괄호가 중첩된 경우에도
-    괄호 개수를 세어가며 짝을 맞추기 때문에 안전합니다.
-    짝이 맞는 '}'를 못 찾으면 None을 돌려줍니다.
-    """
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        ch = text[i]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start:i + 1]
-    return None
-def parse_panterra_text(text: str) -> Optional[dict]:
-    """
-    JSON이 아예 없이 순수 텍스트로만 오는 알람(판테라 / ATH Ultimate)을
-    위한 파서입니다. secret 값은 텍스트에 없으므로 자동으로 채워 넣습니다.
-    """
-    # 1) 종목 판단: "종목 : BYBIT:XXXUSDT.P" 형태가 있으면 그 심볼을 쓰고,
-    #    없으면 BTCUSDT 전용 알람이므로 무조건 BTCUSDT로 간주합니다.
-    m = re.search(r"종목\s*[:：]\s*[A-Z]*:?([A-Z0-9]+?)(?:\.P)?(?:\s|$)", text)
-    symbol = m.group(1) if m else "BTCUSDT"
 
-    # 2) 방향 판단
-    if "매수" in text or "파랑빔" in text or "구름" in text or "LONG" in text.upper():
-        side = "long"
-    elif "매도" in text or "노랑빔" in text or "SHORT" in text.upper():
-        side = "short"
-    else:
-        return None
 
-    return {"secret": WEBHOOK_SECRET, "symbol": symbol, "side": side, "action": "entry"}
 # ----------------------------------------------------------------------------
 # OKX 실행 래퍼
 # ----------------------------------------------------------------------------
@@ -307,8 +262,8 @@ class OkxExecutor:
     _inst_cache: dict = field(default_factory=dict, init=False)
 
     def _timestamp(self) -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
-            f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+        now = datetime.now(timezone.utc)
+        return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
     def _sign(self, ts: str, method: str, path: str, body: str) -> str:
         msg = f"{ts}{method}{path}{body}"
@@ -321,22 +276,19 @@ class OkxExecutor:
         if params:
             query = "?" + "&".join(f"{k}={v}" for k, v in params.items())
         ts = self._timestamp()
-        sign = self._sign(ts, method, path + query, body_str)
         headers = {
             "OK-ACCESS-KEY": self.api_key,
-            "OK-ACCESS-SIGN": sign,
+            "OK-ACCESS-SIGN": self._sign(ts, method, path + query, body_str),
             "OK-ACCESS-TIMESTAMP": ts,
             "OK-ACCESS-PASSPHRASE": self.passphrase,
             "Content-Type": "application/json",
         }
-        url = OKX_BASE_URL + path + query
-        resp = requests.request(method, url, headers=headers, data=body_str if body else None, timeout=15)
+        resp = requests.request(method, OKX_BASE_URL + path + query, headers=headers,
+                                data=body_str if body else None, timeout=15)
         data = resp.json()
         if data.get("code") not in ("0", 0):
-         raise OkxApiError(data)
+            raise OkxApiError(data)
         return data
-
-    # -- 공개 데이터 --------------------------------------------------------
 
     def get_instrument(self, inst_id: str) -> dict:
         if inst_id in self._inst_cache:
@@ -355,25 +307,20 @@ class OkxExecutor:
         ct_val = float(inst["ctVal"])
         lot_sz = float(inst["lotSz"])
         min_sz = float(inst["minSz"])
-        raw_qty = notional_usdt / (ref_price * ct_val)
-        qty = math.floor(raw_qty / lot_sz) * lot_sz
+        qty = math.floor(notional_usdt / (ref_price * ct_val) / lot_sz) * lot_sz
         decimals = max(0, -int(math.floor(math.log10(lot_sz)))) if lot_sz < 1 else 0
         qty = round(qty, decimals)
         return qty if qty >= min_sz else 0.0
 
-    # -- 계정/주문 ------------------------------------------------------------
-
     def set_leverage(self, inst_id: str, leverage: int) -> None:
         try:
-            self._request(
-                "POST", "/api/v5/account/set-leverage",
-                body={"instId": inst_id, "lever": str(leverage), "mgnMode": TD_MODE},
-            )
-        except Exception as e:
+            self._request("POST", "/api/v5/account/set-leverage",
+                          body={"instId": inst_id, "lever": str(leverage), "mgnMode": TD_MODE})
+        except Exception as e:  # noqa: BLE001
             log.info("레버리지 설정 스킵/실패(무시): %s", e)
 
     def open_position(self, inst_id: str, side: str, notional_usdt: float, ref_price: float,
-                   leverage: int, tp_margin_pct: float, sl_margin_pct: float) -> Optional[float]:
+                      leverage: int, tp_margin_pct: float, sl_margin_pct: float) -> Optional[float]:
         order_side = "sell" if side == "S" else "buy"
         label = "SHORT" if side == "S" else "LONG"
 
@@ -399,43 +346,16 @@ class OkxExecutor:
             "side": order_side,
             "ordType": "market",
             "sz": str(qty),
-            "attachAlgoOrds": [
-                {
-                    "tpTriggerPx": str(round(tp_price, 6)),
-                    "tpOrdPx": "-1",
-                    "slTriggerPx": str(round(sl_price, 6)),
-                    "slOrdPx": "-1",
-                }
-            ],
+            "attachAlgoOrds": [{
+                "tpTriggerPx": str(round(tp_price, 6)),
+                "tpOrdPx": "-1",
+                "slTriggerPx": str(round(sl_price, 6)),
+                "slOrdPx": "-1",
+            }],
         }
         data = self._request("POST", "/api/v5/trade/order", body=body)
-        log.info("%s OPEN 주문 전송: %s qty=%s TP=%.4f SL=%.4f -> %s", label, inst_id, qty, tp_price, sl_price, data)
+        log.info("%s OPEN 주문 전송: %s qty=%s TP=%.6f SL=%.6f -> %s", label, inst_id, qty, tp_price, sl_price, data)
         return qty
-
-    def close_position(self, inst_id: str, side: str) -> Optional[dict]:
-        label = "SHORT" if side == "S" else "LONG"
-
-        # 청산 전 미실현 손익 조회 (알림용)
-        pos_data = self._request("GET", "/api/v5/account/positions", params={"instId": inst_id})
-        pos_list = pos_data.get("data", [])
-        pnl = 0.0
-        size = 0.0
-        for p in pos_list:
-            if float(p.get("pos", 0)) != 0:
-                pnl = float(p.get("upl", 0) or 0)
-                size = abs(float(p["pos"]))
-                break
-
-        if size <= 0:
-            log.warning("OKX에 %s %s 포지션이 이미 없습니다(스킵).", inst_id, label)
-            return None
-
-        data = self._request(
-            "POST", "/api/v5/trade/close-position",
-            body={"instId": inst_id, "mgnMode": TD_MODE},
-        )
-        log.info("%s CLOSE 주문 전송: %s -> %s", label, inst_id, data)
-        return {"qty": size, "pnl": pnl}
 
     def get_account_summary(self) -> dict:
         data = self._request("GET", "/api/v5/account/balance", params={"ccy": "USDT"})
@@ -450,38 +370,219 @@ class OkxExecutor:
         return [p for p in data.get("data", []) if float(p.get("pos", 0)) != 0]
 
 
+_executor: Optional[OkxExecutor] = None
+
+
 def sync_positions_from_exchange() -> None:
-      """봇이 시작될 때 OKX에 실제로 떠있는 포지션을 조회해서 로컬 상태를 그 기준으로 다시 맞춥니다.
-      재배포로 로컬 상태 파일이 초기화되어도, 실제로 열려있는 포지션은 다시 정확히 인식하게 됩니다."""
-      try:
-          open_positions = _executor.get_open_positions()
-      except Exception as e:  # noqa: BLE001
-          log.warning("시작 시 포지션 동기화 실패: %s", e)
-          return
+    """시작할 때 OKX 실제 포지션 기준으로 로컬 상태를 다시 맞춤."""
+    try:
+        open_positions = _executor.get_open_positions()
+    except Exception as e:  # noqa: BLE001
+        log.warning("시작 시 포지션 동기화 실패: %s", e)
+        return
 
-      with _state_lock:
-          new_positions: dict = {}
-          for p in open_positions:
-              inst_id = p.get("instId")
-              pos_val = float(p.get("pos", 0) or 0)
-              if not inst_id or pos_val == 0:
-                  continue
-              side = "L" if pos_val > 0 else "S"
-              entry_px = float(p.get("avgPx", 0) or 0)
-              qty = abs(pos_val)
-              new_positions[inst_id] = [{"side": side, "qty": qty, "entry": entry_px}]
+    with _state_lock:
+        new_positions: dict = {}
+        for p in open_positions:
+            inst_id = p.get("instId")
+            pos_val = float(p.get("pos", 0) or 0)
+            if not inst_id or pos_val == 0:
+                continue
+            new_positions[inst_id] = [{
+                "side": "L" if pos_val > 0 else "S",
+                "qty": abs(pos_val),
+                "entry": float(p.get("avgPx", 0) or 0),
+            }]
+        _state["positions"] = new_positions
+        save_state(_state)
 
-          _state["positions"] = new_positions
-          save_state(_state)
-
-      if new_positions:
-          log.info("시작 시 OKX 실제 포지션과 동기화 완료: %s", ", ".join(new_positions.keys()))
-      else:
-          log.info("시작 시 OKX에 열려있는 포지션이 없습니다.")
+    if new_positions:
+        log.info("시작 시 OKX 실제 포지션과 동기화 완료: %s", ", ".join(new_positions.keys()))
+    else:
+        log.info("시작 시 OKX에 열려있는 포지션이 없습니다.")
 
 
 # ----------------------------------------------------------------------------
-# 하트비트(5분 정기 리포트)
+# 진입 처리
+# ----------------------------------------------------------------------------
+
+def enter_position(symbol: str, side_raw: str) -> None:
+    inst_id = normalize_symbol(symbol)
+    side = "S" if side_raw == "short" else "L"
+
+    with _state_lock:
+        if check_daily_sl_limit():
+            log.info("오늘 손절 한도(%d회) 도달로 신규 진입 스킵: %s", MAX_DAILY_SL_COUNT, inst_id)
+            return
+
+        max_stack = SYMBOL_MAX_STACK_OVERRIDE.get(inst_id, MAX_STACK_POSITIONS)
+        positions: dict = _state.setdefault("positions", {})
+        entries = positions.setdefault(inst_id, [])
+
+        # 반대 방향 신호는 단방향 모드에서 기존 포지션을 상쇄시키므로 스킵
+        if entries and entries[0].get("side") != side:
+            log.info("%s 반대 방향 신호라 진입 스킵 — 기존 포지션 보호", inst_id)
+            return
+        if len(entries) >= max_stack:
+            log.info("%s 이미 포지션 %d개 보유 중(한도 %d개)이라 진입 스킵", inst_id, len(entries), max_stack)
+            return
+
+        # 자리 예약 (동시에 같은 종목 신호가 와도 중복 진입 방지)
+        pending_entry = {"side": side, "qty": None, "entry": None, "pending": True}
+        entries.append(pending_entry)
+        save_state(_state)
+
+    def _release():
+        with _state_lock:
+            ents = _state.setdefault("positions", {}).get(inst_id, [])
+            if pending_entry in ents:
+                ents.remove(pending_entry)
+            save_state(_state)
+            return get_trade_stats()
+
+    notional = SYMBOL_NOTIONAL_OVERRIDE.get(inst_id, POSITION_NOTIONAL_USDT)
+    try:
+        ref_price = _executor.get_mark_price(inst_id)
+        qty = _executor.open_position(inst_id, side, notional, ref_price,
+                                      LEVERAGE, TAKE_PROFIT_PCT, STOP_LOSS_PCT)
+    except Exception as e:  # noqa: BLE001
+        stats = _release()
+        log.warning("%s 진입 중 예외 발생: %s", inst_id, e)
+        notify("⚠️ 진입 실패 (OKX)",
+               f"📊 종목: {inst_id}\n❗ 사유: {format_okx_error(e)}\n━━━━━━━━━━\n"
+               f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회")
+        return
+
+    if not qty:
+        stats = _release()
+        log.warning("%s 진입 실패", inst_id)
+        notify("⚠️ 진입 실패 (OKX)",
+               f"📊 종목: {inst_id}\n━━━━━━━━━━\n"
+               f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회")
+        return
+
+    with _state_lock:
+        pending_entry["qty"] = qty
+        pending_entry["entry"] = ref_price
+        pending_entry.pop("pending", None)
+        save_state(_state)
+        stats = record_trade_result(True)
+
+    label = "🔴 숏" if side == "S" else "🟢 롱"
+    notify("🚀 신규 진입 (OKX)",
+           f"{label} 진입 완료\n━━━━━━━━━━\n📊 종목: {inst_id}\n📦 수량: {qty}\n"
+           f"💰 진입가: {ref_price}\n━━━━━━━━━━\n"
+           f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회")
+
+
+# ----------------------------------------------------------------------------
+# zetro 신호 조회 루프
+# ----------------------------------------------------------------------------
+
+def _zetro_signal_key(sig: dict) -> str:
+    return f"{sig.get('symbol')}|{sig.get('type')}|{sig.get('tf')}|{sig.get('at')}|{sig.get('side')}"
+
+
+def _match_rule(sig_type: str) -> Optional[str]:
+    t = sig_type.lower()
+    for name, rule in ZETRO_SIGNAL_RULES.items():
+        if any(k.lower() in t for k in rule["keywords"]):
+            return name
+    return None
+
+
+def _plain_symbol(sym: str) -> str:
+    """'BTC-USDT-SWAP', 'BTCUSDT.P' 등을 'BTCUSDT'로."""
+    return normalize_symbol(sym).replace("-SWAP", "").replace("-", "")
+
+
+def _zetro_fetch() -> list:
+    params = {}
+    resp = requests.get(ZETRO_SIGNALS_URL,
+                        headers={"Authorization": f"Bearer {ZETRO_API_KEY}"},
+                        params=params, timeout=10)
+    if resp.status_code != 200:
+        raise RuntimeError(f"zetro 응답 {resp.status_code}: {resp.text[:200]}")
+    return resp.json().get("items", []) or []
+
+
+def zetro_poll_loop():
+    with _state_lock:
+        seen_list = _state.setdefault("zetro_seen", [])
+    seen = set(seen_list)
+    first_run = not seen   # 처음 켰을 때 이미 떠 있던 신호는 기록만 하고 진입 안 함
+    error_streak = 0
+
+    log.info("zetro 신호 조회 시작 (%s초 간격)", ZETRO_POLL_SECONDS)
+
+    while True:
+        try:
+            items = _zetro_fetch()
+            if error_streak >= 3:
+                notify("✅ zetro 연결 복구", "신호 조회가 다시 정상 작동합니다.")
+            error_streak = 0
+            now_ms = time.time() * 1000
+            new_keys = []
+
+            for sig in sorted(items, key=lambda s: s.get("at") or 0):
+                key = _zetro_signal_key(sig)
+                if key in seen:
+                    continue   # 같은 신호로 두 번 진입 안 함
+                seen.add(key)
+                new_keys.append(key)
+
+                if first_run:
+                    continue
+
+                sig_type = str(sig.get("type", ""))
+                tf = str(sig.get("tf", ""))
+                side = str(sig.get("side", "")).lower()
+                symbol = sig.get("symbol", "")
+                at = sig.get("at") or 0
+
+                log.info("zetro 새 신호: %s %s type=%s tf=%s", symbol, side, sig_type, tf)
+
+                rule_name = _match_rule(sig_type)
+                if not rule_name:
+                    continue   # 아트로포스/스퀘어가 아니면 진입 안 함
+                rule = ZETRO_SIGNAL_RULES[rule_name]
+                if rule["symbols"] and _plain_symbol(symbol) not in rule["symbols"]:
+                    log.info("%s 신호는 %s 종목 진입 안 함: %s", rule_name, symbol, sig)
+                    continue
+                if side not in ("long", "short") or not symbol:
+                    log.info("zetro 신호 형식 불명확(스킵): %s", sig)
+                    continue
+                age_sec = (now_ms - at) / 1000 if at else None
+                if age_sec is None or age_sec > rule["max_age_sec"]:
+                    log.info("%s 신호가 %s초 지나서 스킵: %s", rule_name,
+                             f"{age_sec:.0f}" if age_sec is not None else "?", sig)
+                    continue
+
+                log.info("zetro %s 신호로 진입 시도: %s %s (%s)", rule_name, symbol, side, tf)
+                try:
+                    enter_position(symbol, side)
+                except Exception as e:  # noqa: BLE001
+                    log.error("zetro 신호 진입 처리 실패: %s", e)
+
+            first_run = False
+            if new_keys:
+                with _state_lock:
+                    seen_list = _state.setdefault("zetro_seen", [])
+                    seen_list.extend(new_keys)
+                    if len(seen_list) > 2000:
+                        del seen_list[:-2000]
+                        seen.intersection_update(seen_list)
+                    save_state(_state)
+        except Exception as e:  # noqa: BLE001
+            error_streak += 1
+            log.warning("zetro 신호 조회 실패(%d회 연속): %s", error_streak, e)
+            if error_streak == 3:
+                notify("⚠️ zetro 신호 조회 실패", f"3회 연속 실패\n사유: {str(e)[:200]}")
+        time.sleep(ZETRO_POLL_SECONDS)
+
+
+# ----------------------------------------------------------------------------
+# 정기 리포트 / 익절·손절 감시
 # ----------------------------------------------------------------------------
 
 def heartbeat_loop():
@@ -489,366 +590,87 @@ def heartbeat_loop():
         time.sleep(5 * 60)
         try:
             summary = _executor.get_account_summary()
-            usdt_balance = summary["usdt_balance"]
-            unrealized_pnl = summary["unrealized_pnl"]
-            pnl_emoji = "📈" if unrealized_pnl >= 0 else "📉"
-            pnl_sign = "+" if unrealized_pnl >= 0 else ""
-
+            upl = summary["unrealized_pnl"]
             open_positions = _executor.get_open_positions()
             if open_positions:
                 lines = []
                 for p in open_positions:
                     pos_val = float(p.get("pos", 0))
-                    side_label = "🟢 롱" if pos_val > 0 else "🔴 숏"
                     p_pnl = float(p.get("upl", 0) or 0)
-                    p_sign = "+" if p_pnl >= 0 else ""
                     lines.append(
-                        f"{side_label} {p['instId']}\n"
-                        f"   수량: {abs(pos_val)} | 손익: {p_sign}{p_pnl:.2f} USDT"
+                        f"{'🟢 롱' if pos_val > 0 else '🔴 숏'} {p['instId']}\n"
+                        f"   수량: {abs(pos_val)} | 손익: {p_pnl:+.2f} USDT"
                     )
                 pos_text = "\n\n".join(lines)
             else:
                 pos_text = "보유 포지션 없음"
 
-            msg = (
-                f"━━━━━━━━━━\n"
-                f"💰 USDT 잔고: {usdt_balance:.2f}\n"
-                f"{pnl_emoji} 미실현 손익: {pnl_sign}{unrealized_pnl:.2f}\n"
-                f"━━━━━━━━━━\n\n"
-                f"📌 보유 포지션\n{pos_text}"
-            )
-            notify("📊 정기 리포트 (OKX)", msg)
+            notify("📊 정기 리포트 (OKX)",
+                   f"━━━━━━━━━━\n💰 USDT 잔고: {summary['usdt_balance']:.2f}\n"
+                   f"{'📈' if upl >= 0 else '📉'} 미실현 손익: {upl:+.2f}\n━━━━━━━━━━\n\n"
+                   f"📌 보유 포지션\n{pos_text}")
         except Exception as e:  # noqa: BLE001
             log.warning("하트비트 알림 실패: %s", e)
 
+
 def sl_watch_loop():
     while True:
-        time.sleep(120)  # 2분마다 확인
+        time.sleep(120)
         try:
-            open_positions = _executor.get_open_positions()
-            open_inst_ids = {p["instId"] for p in open_positions}
+            open_inst_ids = {p["instId"] for p in _executor.get_open_positions()}
 
             with _state_lock:
                 positions_state: dict = _state.setdefault("positions", {})
-                closed_inst_ids = [
-                    inst_id for inst_id in list(positions_state.keys())
-                    if positions_state[inst_id] and inst_id not in open_inst_ids
-                ]
+                closed_inst_ids = [i for i, v in positions_state.items() if v and i not in open_inst_ids]
 
-            # OKX API 호출은 락 밖에서 실행 — 네트워크 지연이 웹훅 처리를 막지 않도록 함
             for inst_id in closed_inst_ids:
                 with _state_lock:
-                    entries = positions_state.get(inst_id) or []
+                    entries = _state.setdefault("positions", {}).get(inst_id) or []
                     has_real_entry = any(e.get("qty") for e in entries)
+                    if not has_real_entry:
+                        # 주문 진행 중인 예약 자리는 건드리지 않음
+                        if not any(e.get("pending") for e in entries):
+                            _state["positions"][inst_id] = []
+                            save_state(_state)
+                        continue
 
-                if not has_real_entry:
-                    with _state_lock:
-                        positions_state = _state.setdefault("positions", {})
-                        positions_state[inst_id] = []
-                        save_state(_state)
-                    continue
-
-                hist = _executor._request(
-                    "GET", "/api/v5/account/positions-history",
-                    params={"instId": inst_id, "limit": "1"},
-                )
+                hist = _executor._request("GET", "/api/v5/account/positions-history",
+                                          params={"instId": inst_id, "limit": "1"})
                 rows = hist.get("data", [])
                 pnl = float(rows[0].get("pnl", 0) or 0) if rows else 0.0
                 is_win = pnl >= 0
-                # ↓↓↓ 여기부터 for 루프 안으로 이동 (핵심 수정) ↓↓↓
+
                 with _state_lock:
                     if not is_win:
                         record_sl_hit()
-                        record_trade_result(False)
-                    win_loss_stats = record_win_loss(is_win)
-                    daily_pnl = record_daily_pnl(pnl)   # ← 이 줄 추가
-                    positions_state = _state.setdefault("positions", {})
-                    positions_state[inst_id] = []
+                    win_loss = record_win_loss(is_win)
+                    daily_pnl = record_daily_pnl(pnl)
+                    _state.setdefault("positions", {})[inst_id] = []
                     save_state(_state)
 
-                    emoji = "✅ 익절" if is_win else "🛑 손절"
-                    sign = "+" if pnl >= 0 else ""
-                    notify(
-                        f"{emoji} (OKX)",
-                        f"📊 종목: {inst_id}\n"
-                        f"💰 손익: {sign}{pnl:.2f} USDT\n"
-                        f"━━━━━━━━━━\n"
-                        f"📈 오늘 승: {win_loss_stats['win']}회 / 패: {win_loss_stats['loss']}회\n"
-                        f"💵 오늘 누적 손익: {daily_pnl['total']:+.2f} USDT"   # ← 이 줄 추가
-                    )
+                notify(f"{'✅ 익절' if is_win else '🛑 손절'} (OKX)",
+                       f"📊 종목: {inst_id}\n💰 손익: {pnl:+.2f} USDT\n━━━━━━━━━━\n"
+                       f"📈 오늘 승: {win_loss['win']}회 / 패: {win_loss['loss']}회\n"
+                       f"💵 오늘 누적 손익: {daily_pnl['total']:+.2f} USDT")
         except Exception as e:  # noqa: BLE001
             log.warning("손절 감시 루프 오류: %s", e)
+
+
 # ----------------------------------------------------------------------------
-# 웹훅 처리
+# Railway 상태 확인용 (주문 기능 없음, 접속하면 ok만 응답)
 # ----------------------------------------------------------------------------
 
-_executor: Optional[OkxExecutor] = None
-_state: Optional[dict] = None
-_state_lock = threading.Lock()
-
-def handle_alert(payload: dict) -> None:
-    inst_id = normalize_symbol(payload.get("symbol", ""))
-    side_raw = str(payload.get("side", "")).lower()
-    action = str(payload.get("action", "entry")).lower()
-    side = "S" if side_raw in ("short", "sell", "s") else "L"
-
-    if not inst_id or action not in ("entry", "exit"):
-        raise ValueError("symbol 또는 action 값이 올바르지 않습니다")
-
-    if action == "entry":
-        with _state_lock:
-            if check_daily_sl_limit():
-                log.info("오늘 손절 한도(%d회) 도달로 신규 진입 스킵: %s", MAX_DAILY_SL_COUNT, inst_id)
-                return
-
-                                    # 종목별 최대 스태킹 개수 확인 (예: BTC는 이미 포지션이 있으면 추가 진입 안 함)
-            max_stack = SYMBOL_MAX_STACK_OVERRIDE.get(inst_id, MAX_STACK_POSITIONS)
-            positions: dict = _state.setdefault("positions", {})
-            existing_entries = positions.get(inst_id, [])
-            existing_count = len(existing_entries)
-
-            # 반대 방향 신호는 넷 포지션 모드에서 기존 포지션을 상쇄(부분 청산)시키므로 아예 스킵
-            if existing_entries and existing_entries[0].get("side") != side:
-                log.info("%s 반대 방향 신호(기존 %s, 신호 %s)라 진입 스킵 — 기존 포지션 보호",
-                          inst_id, existing_entries[0].get("side"), side)
-                return
-
-            if existing_count >= max_stack:
-                log.info("%s 이미 포지션 %d개 보유 중(한도 %d개)이라 진입 스킵", inst_id, existing_count, max_stack)
-                return
-
-            # 자리 예약: 같은 종목 신호가 거의 동시에 여러 번 와도 뒤에 온 요청이 이 예약을 보고 막히도록 함
-            entries = positions.setdefault(inst_id, [])
-            pending_entry = {"side": side, "qty": None, "entry": None, "pending": True}
-            entries.append(pending_entry)
-            save_state(_state)
-
-        ref_price = None
-
-        ref_price = None
-        try:
-            if payload.get("price"):
-                ref_price = float(payload["price"])
-        except (TypeError, ValueError):
-            ref_price = None
-
-        if not ref_price:
-            ref_price = _executor.get_mark_price(inst_id)  # OKX API 호출 — 락 밖에서 실행
-
-        is_blue_beam_entry = payload.get("_blue_beam", False)
-        if is_blue_beam_entry:
-            notional = BLUE_BEAM_NOTIONAL_USDT
-            leverage = BLUE_BEAM_LEVERAGE
-            tp_margin_pct = BLUE_BEAM_TP_PCT
-            sl_margin_pct = BLUE_BEAM_SL_PCT
-            # BTC/ETH는 파랑빔 진입 시 증거금을 별도 지정된 값으로 사용
-            if inst_id in SYMBOL_NOTIONAL_OVERRIDE:
-                notional = SYMBOL_NOTIONAL_OVERRIDE[inst_id]
-            # 구름 터치는 레버리지/증거금을 별도 값으로 적용 (BTC/ETH 예외보다 우선 적용됨)
-            if payload.get("_cloud_touch"):
-                leverage = CLOUD_TOUCH_LEVERAGE
-                notional = CLOUD_TOUCH_NOTIONAL_USDT
-                tp_margin_pct = CLOUD_TOUCH_TP_PCT
-                sl_margin_pct = CLOUD_TOUCH_SL_PCT
-        else:
-            notional = POSITION_NOTIONAL_USDT
-            leverage = LEVERAGE
-            tp_margin_pct = TAKE_PROFIT_PCT
-            sl_margin_pct = STOP_LOSS_PCT * LEVERAGE
-
-                # OKX 주문 전송 — 락을 잡지 않은 채로 실행되어 다른 종목 웹훅과 동시 처리 가능
-        try:
-            qty = _executor.open_position(inst_id, side, notional, ref_price, leverage, tp_margin_pct, sl_margin_pct)
-        except Exception as e:  # noqa: BLE001
-            # OKX가 주문을 거절(증거금 부족 등)하면 예외가 발생하는데, 이때도 예약한 자리를
-            # 반드시 지워야 함 — 안 지우면 유령 포지션으로 남아 손절/승패 집계에 잘못 반영됨
-            with _state_lock:
-                positions: dict = _state.setdefault("positions", {})
-                entries = positions.get(inst_id, [])
-                if pending_entry in entries:
-                    entries.remove(pending_entry)
-                save_state(_state)
-                stats = get_trade_stats()
-            log.warning("%s 진입 중 예외 발생: %s", inst_id, e)
-            notify(
-                "⚠️ 진입 실패 (OKX)",
-                f"📊 종목: {inst_id}\n"
-                f"❗ 사유: {format_okx_error(e)}\n"
-                f"━━━━━━━━━━\n"
-                f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
-            )
-            return
-        if qty:
-            with _state_lock:
-                # 예약해뒀던 자리를 실제 체결 데이터로 확정
-                pending_entry["qty"] = qty
-                pending_entry["entry"] = ref_price
-                pending_entry.pop("pending", None)
-                save_state(_state)
-                stats = record_trade_result(True)
-            label = "🔴 숏" if side == "S" else "🟢 롱"
-            notify(
-                "🚀 신규 진입 (OKX)",
-                f"{label} 진입 완료\n"
-                f"━━━━━━━━━━\n"
-                f"📊 종목: {inst_id}\n"
-                f"📦 수량: {qty}\n"
-                f"💰 진입가: {ref_price}\n"
-                f"━━━━━━━━━━\n"
-                f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
-            )
-        else:
-            with _state_lock:
-                # 진입 실패했으니 예약해뒀던 자리를 제거 (다음 신호가 다시 시도할 수 있도록)
-                positions: dict = _state.setdefault("positions", {})
-                entries = positions.get(inst_id, [])
-                if pending_entry in entries:
-                    entries.remove(pending_entry)
-                save_state(_state)
-                stats = get_trade_stats()
-            log.warning("%s 진입 실패", inst_id)
-            notify(
-                "⚠️ 진입 실패 (OKX)",
-                f"📊 종목: {inst_id}\n"
-                f"━━━━━━━━━━\n"
-                f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회"
-            )
-                    
-    else:  # exit
-        with _state_lock:
-            positions: dict = _state.setdefault("positions", {})
-            entries = positions.get(inst_id) or []
-            close_side = entries[0].get("side", "S") if entries else None
-
-        if not entries:
-            log.info("%s 추적 중인 포지션이 없어 청산 스킵", inst_id)
-            return
-
-        result = _executor.close_position(inst_id, close_side)
-
-        with _state_lock:
-            positions: dict = _state.setdefault("positions", {})
-            positions.pop(inst_id, None)
-            daily_pnl = None
-            if result:
-                daily_pnl = record_daily_pnl(result["pnl"])   # ← 추가
-            save_state(_state)
-
-        label = "🔴 숏" if close_side == "S" else "🟢 롱"
-        if result:
-            pnl = result["pnl"]
-            emoji = "💰" if pnl >= 0 else "💸"
-            sign = "+" if pnl >= 0 else ""
-            notify(
-                "✅ 포지션 청산 (OKX)",
-                f"{label} 청산 완료\n"
-                f"━━━━━━━━━━\n"
-                f"📊 종목: {inst_id}\n"
-                f"{emoji} 손익: {sign}{pnl:.2f} USDT\n"
-                f"💵 오늘 누적 손익: {daily_pnl['total']:+.2f} USDT"   # ← 추가
-            )
-        else:
-            notify("✅ 포지션 청산 (OKX)", f"{label} 청산 완료\n📊 종목: {inst_id}")
-
-class WebhookHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
+class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def do_POST(self):
-        self.close_connection = True
-        if self.path.rstrip("/") != "/webhook":
-            self.send_response(404)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+    def do_GET(self):
+        body = b'{"ok":true}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        raw = self.rfile.read(length) if length else b""
-
-        raw_text = raw.decode("utf-8", errors="ignore")
-        try:
-            json_block = extract_json_block(raw_text)
-            if json_block:
-                payload = json.loads(json_block)
-            else:
-                payload = parse_panterra_text(raw_text)
-                if payload is None:
-                    raise ValueError("JSON도 없고 텍스트 파싱도 실패했습니다")
-        except Exception:  # noqa: BLE001
-            log.warning("JSON 파싱 실패, 원문: %s", raw_text[:200])
-            body = b'{"error":"invalid json"}'
-            self.send_response(400)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-           
-
-        if re.search(r"매도|숏|SHORT|SELL", raw_text, re.IGNORECASE):
-            payload["side"] = "short"
-        elif re.search(r"매수|롱|LONG|BUY", raw_text, re.IGNORECASE):
-            payload["side"] = "long"
-
-        raw_upper = raw_text.upper()
-        is_square = "스퀘어" in raw_text or "SQUARE" in raw_upper
-        is_panterra = "판테라" in raw_text or "PANTERRA" in raw_upper
-        is_blue_beam = "파랑빔" in raw_text
-        is_yellow_beam = "노랑빔" in raw_text
-        is_cloud_touch = "구름" in raw_text
-        is_red_diamond = "빨간다이아" in raw_text or "RED DIAMOND" in raw_upper
-        is_blue_diamond = "파랑다이아" in raw_text or "BLUE DIAMOND" in raw_upper
-
-        if not is_square and not is_panterra and not is_red_diamond and not is_blue_diamond:
-            log.info("허용된 신호가 아니라서 진입 스킵: %s", raw_text[:100])
-            body = b'{"ok":true,"skipped":"not allowed signal"}'
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if is_cloud_touch:
-            log.info("구름 신호는 진입 안 함 (스킵): %s", raw_text[:100])
-            body = b'{"ok":true,"skipped":"cloud signal"}'
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if is_blue_beam or is_yellow_beam:
-            payload["_blue_beam"] = True  # 노랑빔도 파랑빔과 동일한 포지션 설정을 사용
-        if is_cloud_touch:
-            payload["_blue_beam"] = True
-            payload["_cloud_touch"] = True  # 레버리지만 3배로 다르게 적용하기 위한 별도 표시
-        if payload.get("secret") != WEBHOOK_SECRET:
-            log.warning("잘못된 secret 값으로 접근 시도가 있었습니다.")
-            body = b'{"error":"unauthorized"}'
-            self.send_response(401)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        try:
-            handle_alert(payload)
-            body = b'{"ok":true}'
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:  # noqa: BLE001
-            log.error("웹훅 처리 실패: %s", e)
-            body = json.dumps({"error": str(e)}).encode("utf-8")
-            self.send_response(500)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-class WebhookServer(ThreadingHTTPServer):
-    # 기본값 5는 알림이 한꺼번에 몰릴 때 초과 연결을 즉시 거부(502의 원인)하므로 넉넉하게 늘림
-    request_queue_size = 128
-    daemon_threads = True
-    allow_reuse_address = True
 
 def main():
     global _executor, _state
@@ -863,14 +685,19 @@ def main():
     _state = load_state()
     sync_positions_from_exchange()
 
-    log.info(
-        "TV 웹훅 봇(OKX) 시작 | notional=%sUSDT leverage=%sx port=%s",
-        POSITION_NOTIONAL_USDT, LEVERAGE, WEBHOOK_PORT,
-    )
+    log.info("zetro OKX 봇 시작 | notional=%sUSDT leverage=%sx TP=+%.0f%% SL=-%.0f%%",
+             POSITION_NOTIONAL_USDT, LEVERAGE, TAKE_PROFIT_PCT * 100, STOP_LOSS_PCT * 100)
+
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=sl_watch_loop, daemon=True).start()
-    server = WebhookServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
-    log.info("웹훅 서버 실행 중 -> 0.0.0.0:%s/webhook", WEBHOOK_PORT)
+    if ZETRO_API_KEY:
+        threading.Thread(target=zetro_poll_loop, daemon=True).start()
+    else:
+        log.warning("ZETRO_API_KEY가 없어서 zetro 신호 조회는 꺼둔 상태로 시작합니다.")
+        notify("⚠️ zetro 신호 조회 꺼짐", "Railway Variables에 ZETRO_API_KEY를 넣어주세요.")
+
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), HealthHandler)
+    server.daemon_threads = True
     server.serve_forever()
 
 
