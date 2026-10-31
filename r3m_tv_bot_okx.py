@@ -65,7 +65,7 @@ SYMBOL_MARGIN_OVERRIDE = {
 
 MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추가 진입 안 함
 SYMBOL_MAX_STACK_OVERRIDE = {}
-MAX_DAILY_SL_COUNT = 10   # 하루(한국시간 0시 기준) 손절 10회가 되면 그날은 신규 진입 중지
+MAX_DAILY_SL_COUNT = 5    # 하루(한국시간 0시 기준) 손절 5회가 되면 그날은 신규 진입 중지, 0시 지나면 자동 재개
 
 # ----------------------------------------------------------------------------
 # zetro 신호 설정
@@ -82,10 +82,46 @@ MIN_24H_VOLUME_USD = 1_000_000
 
 # API 조회로 들어온 신호의 실제 진입 ON/OFF
 # False: 신호는 계속 조회해서 로그에만 남기고 진입은 안 함 (웹훅 확인 중이라 꺼둔 상태)
-ZETRO_API_ENTRY_ENABLED = False
+# True여도 아래 규칙 중 "api_entry": True 인 신호만 API로 진입 (지금은 아트로포스만)
+ZETRO_API_ENTRY_ENABLED = True
 
 # zetro 웹훅 수신 주소 (zetro 웹훅 설정에 넣을 주소의 뒷부분)
 ZETRO_HOOK_PATH = "/zetro-hook/5472118043e07db5"
+
+# ----------------------------------------------------------------------------
+# zetro 웹훅 진입 규칙 (zetro 알림 만들기에서 거래대금·위험/주의 코인 등 필터를 걸어둔 알림만 옴)
+# zetro 알림 메시지에 넣는 "rule" 값과 아래 이름이 같아야 합니다.
+# ----------------------------------------------------------------------------
+HOOK_ENTRY_ENABLED = True
+
+HOOK_RULES = {
+    "cluster": {            # 클러스터 저항/지지 닿음
+        "symbols": None,
+        "intervals": {"5"},
+        "max_age_sec": 180,
+        "leverage": 3,      # 증거금 100 × 3배 = 포지션 300 USDT
+        "tp_pct": 0.08,     # 증거금 대비 +8% 익절
+        "sl_pct": 0.06,     # 증거금 대비 -6% 손절
+    },
+    "atropos": {            # 아트로포스
+        "symbols": None,
+        "intervals": {"5"},
+        "max_age_sec": 60,
+        "leverage": LEVERAGE,
+    },
+    "dip_diamond": {        # 급락 매수 다이아
+        "symbols": None,
+        "intervals": {"5"},
+        "max_age_sec": 180,
+        "leverage": 3,
+    },
+    "square": {             # 스퀘어 (BTC만)
+        "symbols": {"BTCUSDT"},
+        "intervals": {"5"},
+        "max_age_sec": 180,
+        "leverage": LEVERAGE,
+    },
+}
 
 # 진입할 신호 규칙
 #   symbols    : 진입 허용 종목 (None이면 전 종목)
@@ -114,7 +150,10 @@ ZETRO_SIGNAL_RULES = {
         "symbols": None,            # BTC 포함 전 종목
         "tfs": {"5m"},
         "max_age_sec": 60,          # 뜬 지 1분 이내만
-        "leverage": LEVERAGE,
+        "leverage": 3,              # 증거금 100 × 3배 (클러스터와 동일)
+        "tp_pct": 0.08,             # 증거금 대비 +8% 익절
+        "sl_pct": 0.06,             # 증거금 대비 -6% 손절
+        "api_entry": True,          # 전체 코인 알림이 안 돼서 API로 진입 (거래대금 100만 달러 이상만)
     },
     "스퀘어": {
         "type": "square",
@@ -470,7 +509,8 @@ def sync_positions_from_exchange() -> None:
 # 진입 처리
 # ----------------------------------------------------------------------------
 
-def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE) -> None:
+def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
+                   tp_pct: float = TAKE_PROFIT_PCT, sl_pct: float = STOP_LOSS_PCT) -> None:
     inst_id = normalize_symbol(symbol)
     side = "S" if side_raw == "short" else "L"
 
@@ -508,7 +548,7 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE) -> None
     try:
         ref_price = _executor.get_mark_price(inst_id)
         qty = _executor.open_position(inst_id, side, notional, ref_price,
-                                      leverage, TAKE_PROFIT_PCT, STOP_LOSS_PCT)
+                                      leverage, tp_pct, sl_pct)
     except Exception as e:  # noqa: BLE001
         stats = _release()
         log.warning("%s 진입 중 예외 발생: %s", inst_id, e)
@@ -653,13 +693,14 @@ def zetro_poll_loop():
                              f"{vol_usd:,.0f}", f"{MIN_24H_VOLUME_USD:,.0f}")
                     continue
 
-                if not ZETRO_API_ENTRY_ENABLED:
+                if not ZETRO_API_ENTRY_ENABLED or not rule.get("api_entry"):
                     log.info("API 진입 꺼짐 — %s %s %s 신호 기록만 함", rule_name, symbol, side)
                     continue
 
                 log.info("zetro %s 신호로 진입 시도: %s %s (%s)", rule_name, symbol, side, tf)
                 try:
-                    enter_position(symbol, side, rule.get("leverage", LEVERAGE))
+                    enter_position(symbol, side, rule.get("leverage", LEVERAGE),
+                                   rule.get("tp_pct", TAKE_PROFIT_PCT), rule.get("sl_pct", STOP_LOSS_PCT))
                 except Exception as e:  # noqa: BLE001
                     log.error("zetro 신호 진입 처리 실패: %s", e)
 
@@ -678,6 +719,101 @@ def zetro_poll_loop():
             if error_streak == 3:
                 notify("⚠️ zetro 신호 조회 실패", f"3회 연속 실패\n사유: {str(e)[:200]}")
         time.sleep(ZETRO_POLL_SECONDS)
+
+
+# ----------------------------------------------------------------------------
+# zetro 웹훅 신호 처리
+# ----------------------------------------------------------------------------
+
+_hook_lock = threading.Lock()
+
+
+def _hook_side(p: dict) -> Optional[str]:
+    v = str(p.get("side", "")).lower().strip()
+    if v in ("up", "long", "buy", "롱", "매수"):
+        return "long"
+    if v in ("down", "short", "sell", "숏", "매도"):
+        return "short"
+    return None
+
+
+def _hook_age_sec(p: dict) -> Optional[float]:
+    t = str(p.get("time", "")).strip()
+    if not t:
+        return None
+    try:
+        if t.isdigit():
+            ts = int(t) / (1000 if len(t) > 10 else 1)
+        else:
+            ts = datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+        return time.time() - ts
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def handle_zetro_hook(text: str) -> None:
+    try:
+        payload = json.loads(text)
+    except Exception:  # noqa: BLE001
+        log.info("웹훅 내용이 JSON이 아니라 무시: %s", text[:200])
+        return
+
+    rule_name = str(payload.get("rule", "")).strip()
+    rule = HOOK_RULES.get(rule_name)
+    if not rule:
+        log.info("웹훅: 진입 규칙에 없는 알림이라 무시 (rule=%s)", rule_name or "-")
+        return
+
+    ticker = str(payload.get("ticker", "")).upper().strip()
+    symbol = ticker if ticker.endswith("USDT") else f"{ticker}USDT"
+    side = _hook_side(payload)
+    interval = str(payload.get("interval", "")).strip()
+    age = _hook_age_sec(payload)
+
+    if not ticker or not side:
+        log.info("웹훅: 종목/방향을 알 수 없어 무시: %s", text[:300])
+        return
+    if rule["intervals"] and interval not in rule["intervals"]:
+        log.info("웹훅 %s: %s봉이라 무시 (5분봉만)", rule_name, interval)
+        return
+    if rule["symbols"] and symbol not in rule["symbols"]:
+        log.info("웹훅 %s: %s 종목은 진입 안 함", rule_name, symbol)
+        return
+    if age is not None and age > rule["max_age_sec"]:
+        log.info("웹훅 %s: %s 신호가 %.0f초 지나서 무시", rule_name, symbol, age)
+        return
+
+    # 같은 신호 중복 진입 방지
+    key = str(payload.get("id") or f"{rule_name}|{symbol}|{side}|{payload.get('time')}")
+    with _hook_lock:
+        with _state_lock:
+            seen = _state.setdefault("hook_seen", [])
+            if key in seen:
+                log.info("웹훅: 이미 처리한 신호라 무시 (%s)", key)
+                return
+            seen.append(key)
+            if len(seen) > 2000:
+                del seen[:-2000]
+            save_state(_state)
+
+    if not HOOK_ENTRY_ENABLED:
+        log.info("웹훅 진입 꺼짐 — %s %s %s 기록만 함", rule_name, symbol, side)
+        return
+
+    inst_id = normalize_symbol(symbol)
+    try:
+        vol_usd = _executor.get_24h_volume_usd(inst_id)
+    except Exception as e:  # noqa: BLE001
+        log.info("웹훅 %s: %s 조회 실패(OKX에 없는 종목일 수 있음) — 진입 안 함: %s",
+                 rule_name, inst_id, format_okx_error(e))
+        return
+    if vol_usd < MIN_24H_VOLUME_USD:
+        log.info("웹훅 %s: %s OKX 24시간 거래대금 $%s 부족 — 진입 안 함", rule_name, inst_id, f"{vol_usd:,.0f}")
+        return
+
+    log.info("웹훅 %s 신호로 진입 시도: %s %s", rule_name, symbol, side)
+    enter_position(symbol, side, rule["leverage"],
+                   rule.get("tp_pct", TAKE_PROFIT_PCT), rule.get("sl_pct", STOP_LOSS_PCT))
 
 
 # ----------------------------------------------------------------------------
@@ -776,14 +912,26 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    @staticmethod
+    def _safe_handle(text: str) -> None:
+        try:
+            handle_zetro_hook(text)
+        except Exception as e:  # noqa: BLE001
+            log.error("웹훅 처리 실패: %s", e)
+
     def do_POST(self):
-        # zetro 웹훅 수신 확인용 (지금은 받은 내용을 로그에만 남기고 진입은 안 함)
+        # zetro 웹훅 수신 → 응답은 바로 하고 진입 처리는 따로 진행
         length = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(length) if length else b""
-        if self.path.rstrip("/") == ZETRO_HOOK_PATH:
-            log.info("zetro 웹훅 수신: %s", raw.decode("utf-8", errors="ignore")[:2000])
+        path_only = self.path.split("?", 1)[0].rstrip("/")
+        text = raw.decode("utf-8", errors="ignore")[:2000]
+        if path_only == ZETRO_HOOK_PATH:
+            log.info("zetro 웹훅 수신: %s", text)
+            threading.Thread(target=self._safe_handle, args=(text,), daemon=True).start()
             code, body = 200, b'{"ok":true}'
         else:
+            # 주소가 달라도 무엇이 왔는지 확인할 수 있게 기록
+            log.info("웹훅 수신(주소 불일치) path=%s body=%s", self.path[:200], text[:500])
             code, body = 404, b""
         self.send_response(code)
         self.send_header("Content-Length", str(len(body)))
