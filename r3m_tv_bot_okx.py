@@ -35,6 +35,7 @@ import base64
 import hmac
 import hashlib
 import json
+import re
 import logging
 import math
 import os
@@ -127,7 +128,7 @@ HOOK_RULES = {
     "cluster": {            # 클러스터 저항/지지 닿음
         "symbols": None,
         "intervals": {"5"},
-        "max_age_sec": 180,
+        "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
         "leverage": 5,      # 증거금 100 × 5배 = 포지션 500 USDT
         "tp_pct": 0.08,     # 증거금 대비 +8% 익절
         "sl_pct": 0.06,     # 증거금 대비 -6% 손절
@@ -135,19 +136,19 @@ HOOK_RULES = {
     "atropos": {            # 아트로포스
         "symbols": None,
         "intervals": {"5"},
-        "max_age_sec": 60,
+        "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
         "leverage": LEVERAGE,
     },
     "dip_diamond": {        # 급락 매수 다이아
         "symbols": None,
         "intervals": {"5"},
-        "max_age_sec": 180,
+        "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
         "leverage": 5,
     },
     "square": {             # 스퀘어 (BTC만)
         "symbols": {"BTCUSDT"},
         "intervals": {"5"},
-        "max_age_sec": 180,
+        "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
         "leverage": LEVERAGE,
     },
 }
@@ -899,7 +900,7 @@ def handle_zetro_hook(text: str) -> None:
     try:
         payload = json.loads(text)
     except Exception:  # noqa: BLE001
-        log.info("웹훅 내용이 JSON이 아니라 무시: %s", text[:200])
+        log.info("웹훅 내용이 JSON이 아니라 무시 (zetro 알림 메시지 칸 확인 필요): %s", text[:200])
         return
 
     rule_name = str(payload.get("rule", "")).strip()
@@ -911,7 +912,7 @@ def handle_zetro_hook(text: str) -> None:
     ticker = str(payload.get("ticker", "")).upper().strip()
     symbol = ticker if ticker.endswith("USDT") else f"{ticker}USDT"
     side = _hook_side(payload)
-    interval = str(payload.get("interval", "")).strip()
+    interval = re.sub(r"[^0-9]", "", str(payload.get("interval", "")))   # "5", "5m", "5분" → "5"
     age = _hook_age_sec(payload)
 
     if not ticker or not side:
