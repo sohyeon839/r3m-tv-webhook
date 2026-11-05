@@ -66,6 +66,10 @@ SYMBOL_MARGIN_OVERRIDE = {
 
 MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추가 진입 안 함
 SYMBOL_MAX_STACK_OVERRIDE = {}
+# 누적 성적 집계 시작 시각 (한국시간). 이 시각 이후 봇이 진입한 거래만 집계해요.
+# 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
+STATS_START_KST = "2026-11-06 01:20"
+
 MAX_DAILY_SL_COUNT = 3    # 하루(한국시간 0시 기준) 손절 3회가 되면 그날은 신규 진입 중지, 0시 지나면 자동 재개
 
 # ----------------------------------------------------------------------------
@@ -123,6 +127,8 @@ SCREENER_RULES = {
         "sl_pct": 0.06,             # 증거금 대비 -6% 손절 (3배 → 가격 -2%)
     },
 }
+
+HOOK_NAMES = {"cluster": "클러스터", "atropos": "아트로포스", "dip_diamond": "급락매수다이아", "square": "스퀘어"}
 
 HOOK_RULES = {
     "cluster": {            # 클러스터 저항/지지 닿음
@@ -361,6 +367,55 @@ def record_daily_pnl(pnl: float) -> dict:
     return d
 
 
+def _stats_start_ms() -> int:
+    dt = datetime.strptime(STATS_START_KST, "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+    return int(dt.timestamp() * 1000)
+
+
+def _cum_stats() -> dict:
+    """누적 성적. 시작 시각을 바꾸면 자동으로 새로 시작."""
+    st = _state.setdefault("cum_stats", {})
+    if st.get("start") != STATS_START_KST:
+        st.clear()
+        st.update({"start": STATS_START_KST, "win": 0, "loss": 0, "pnl": 0.0,
+                   "best": None, "worst": None, "by_source": {}})
+    return st
+
+
+def record_cum_trade(source: str, pnl: float) -> dict:
+    st = _cum_stats()
+    key = "win" if pnl >= 0 else "loss"
+    st[key] += 1
+    st["pnl"] += pnl
+    st["best"] = pnl if st["best"] is None else max(st["best"], pnl)
+    st["worst"] = pnl if st["worst"] is None else min(st["worst"], pnl)
+    src = st["by_source"].setdefault(source, {"win": 0, "loss": 0, "pnl": 0.0})
+    src[key] += 1
+    src["pnl"] += pnl
+    save_state(_state)
+    return st
+
+
+def format_cum_stats() -> str:
+    st = _cum_stats()
+    n = st["win"] + st["loss"]
+    if n == 0:
+        return f"📒 누적 성적 ({st['start']} 부터)\n아직 종료된 거래 없음"
+    rate = st["win"] / n * 100
+    lines = [
+        f"📒 누적 성적 ({st['start']} 부터)",
+        f"🏆 {st['win']}승 {st['loss']}패 (승률 {rate:.0f}%)",
+        f"💵 누적 실현손익: {st['pnl']:+.2f} USDT",
+        f"📊 거래당 평균: {st['pnl'] / n:+.2f} USDT",
+        f"⬆️ 최고 {st['best']:+.2f} / ⬇️ 최저 {st['worst']:+.2f}",
+    ]
+    for name, src in st["by_source"].items():
+        m = src["win"] + src["loss"]
+        lines.append(f"  · {name}: {src['win']}승 {src['loss']}패, {src['pnl']:+.2f} USDT"
+                     f" (승률 {src['win'] / m * 100:.0f}%)" if m else f"  · {name}: -")
+    return "\n".join(lines)
+
+
 def normalize_symbol(sym: str) -> str:
     """'BTCUSDT', 'BTCUSDT.P', 'BTC-USDT-SWAP' 등을 'BTC-USDT-SWAP'으로 통일."""
     sym = (sym or "").upper().strip()
@@ -521,10 +576,13 @@ def sync_positions_from_exchange() -> None:
             pos_val = float(p.get("pos", 0) or 0)
             if not inst_id or pos_val == 0:
                 continue
+            prev = (_state.get("positions", {}).get(inst_id) or [{}])[0]
             new_positions[inst_id] = [{
                 "side": "L" if pos_val > 0 else "S",
                 "qty": abs(pos_val),
                 "entry": float(p.get("avgPx", 0) or 0),
+                "source": prev.get("source"),
+                "opened_at": prev.get("opened_at"),
             }]
         _state["positions"] = new_positions
         save_state(_state)
@@ -540,7 +598,8 @@ def sync_positions_from_exchange() -> None:
 # ----------------------------------------------------------------------------
 
 def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
-                   tp_pct: float = TAKE_PROFIT_PCT, sl_pct: float = STOP_LOSS_PCT) -> None:
+                   tp_pct: float = TAKE_PROFIT_PCT, sl_pct: float = STOP_LOSS_PCT,
+                   source: str = "기타") -> None:
     inst_id = normalize_symbol(symbol)
     side = "S" if side_raw == "short" else "L"
 
@@ -562,7 +621,8 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
             return
 
         # 자리 예약 (동시에 같은 종목 신호가 와도 중복 진입 방지)
-        pending_entry = {"side": side, "qty": None, "entry": None, "pending": True}
+        pending_entry = {"side": side, "qty": None, "entry": None, "pending": True,
+                         "source": source, "opened_at": int(time.time() * 1000)}
         entries.append(pending_entry)
         save_state(_state)
 
@@ -604,7 +664,7 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
 
     label = "🔴 숏" if side == "S" else "🟢 롱"
     notify("🚀 신규 진입 (OKX)",
-           f"{label} 진입 완료\n━━━━━━━━━━\n📊 종목: {inst_id}\n📦 수량: {qty}\n"
+           f"{label} 진입 완료 · {source}\n━━━━━━━━━━\n📊 종목: {inst_id}\n📦 수량: {qty}\n"
            f"💰 진입가: {ref_price}\n━━━━━━━━━━\n"
            f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회")
 
@@ -730,7 +790,8 @@ def zetro_poll_loop():
                 log.info("zetro %s 신호로 진입 시도: %s %s (%s)", rule_name, symbol, side, tf)
                 try:
                     enter_position(symbol, side, rule.get("leverage", LEVERAGE),
-                                   rule.get("tp_pct", TAKE_PROFIT_PCT), rule.get("sl_pct", STOP_LOSS_PCT))
+                                   rule.get("tp_pct", TAKE_PROFIT_PCT), rule.get("sl_pct", STOP_LOSS_PCT),
+                                   source=rule_name)
                 except Exception as e:  # noqa: BLE001
                     log.error("zetro 신호 진입 처리 실패: %s", e)
 
@@ -842,7 +903,8 @@ def screener_poll_loop():
                         continue
                     log.info("스크리너 %s 신호로 진입 시도: %s %s", name, symbol, side)
                     try:
-                        enter_position(symbol, side, rule["leverage"], rule["tp_pct"], rule["sl_pct"])
+                        enter_position(symbol, side, rule["leverage"], rule["tp_pct"], rule["sl_pct"],
+                                       source=name)
                     except Exception as e:  # noqa: BLE001
                         log.error("스크리너 진입 처리 실패: %s", e)
                 first_run[name] = False
@@ -958,7 +1020,8 @@ def handle_zetro_hook(text: str) -> None:
 
     log.info("웹훅 %s 신호로 진입 시도: %s %s", rule_name, symbol, side)
     enter_position(symbol, side, rule["leverage"],
-                   rule.get("tp_pct", TAKE_PROFIT_PCT), rule.get("sl_pct", STOP_LOSS_PCT))
+                   rule.get("tp_pct", TAKE_PROFIT_PCT), rule.get("sl_pct", STOP_LOSS_PCT),
+                   source=HOOK_NAMES.get(rule_name, rule_name))
 
 
 # ----------------------------------------------------------------------------
@@ -992,6 +1055,7 @@ def heartbeat_loop():
                 wl = dict(_daily("daily_win_loss", {"win": 0, "loss": 0}))
                 pnl_today = _daily("daily_pnl", {"total": 0.0})["total"]
                 sl_count = _daily("daily_sl", {"count": 0})["count"]
+                cum_text = format_cum_stats()
             stopped = "\n⛔ 오늘 손절 한도 도달 — 신규 진입 중지 중" if sl_count >= MAX_DAILY_SL_COUNT else ""
 
             notify("📊 정기 리포트 (OKX)",
@@ -999,7 +1063,8 @@ def heartbeat_loop():
                    f"{'📈' if upl >= 0 else '📉'} 미실현 손익: {upl:+.2f}\n━━━━━━━━━━\n"
                    f"🗓 오늘 성적 (한국시간 0시 기준)\n"
                    f"🏆 {wl['win']}승 {wl['loss']}패\n"
-                   f"💵 당일 실현손익: {pnl_today:+.2f} USDT{stopped}\n━━━━━━━━━━\n\n"
+                   f"💵 당일 실현손익: {pnl_today:+.2f} USDT{stopped}\n━━━━━━━━━━\n"
+                   f"{cum_text}\n━━━━━━━━━━\n\n"
                    f"📌 보유 포지션\n{pos_text}")
         except Exception as e:  # noqa: BLE001
             log.warning("하트비트 알림 실패: %s", e)
@@ -1020,6 +1085,8 @@ def sl_watch_loop():
                 with _state_lock:
                     entries = _state.setdefault("positions", {}).get(inst_id) or []
                     has_real_entry = any(e.get("qty") for e in entries)
+                    tracked = [e for e in entries if e.get("qty") and (e.get("opened_at") or 0) >= _stats_start_ms()]
+                    source = (tracked[0].get("source") or "기타") if tracked else None
                     if not has_real_entry:
                         # 주문 진행 중인 예약 자리는 건드리지 않음
                         if not any(e.get("pending") for e in entries):
@@ -1038,13 +1105,17 @@ def sl_watch_loop():
                         record_sl_hit()
                     win_loss = record_win_loss(is_win)
                     daily_pnl = record_daily_pnl(pnl)
+                    if source:
+                        record_cum_trade(source, pnl)
+                    cum_text = format_cum_stats()
                     _state.setdefault("positions", {})[inst_id] = []
                     save_state(_state)
 
                 notify(f"{'✅ 익절' if is_win else '🛑 손절'} (OKX)",
-                       f"📊 종목: {inst_id}\n💰 손익: {pnl:+.2f} USDT\n━━━━━━━━━━\n"
+                       f"📊 종목: {inst_id}{' · ' + source if source else ''}\n💰 손익: {pnl:+.2f} USDT\n━━━━━━━━━━\n"
                        f"🏆 오늘 {win_loss['win']}승 {win_loss['loss']}패\n"
-                       f"💵 당일 실현손익: {daily_pnl['total']:+.2f} USDT")
+                       f"💵 당일 실현손익: {daily_pnl['total']:+.2f} USDT\n━━━━━━━━━━\n"
+                       f"{cum_text}")
         except Exception as e:  # noqa: BLE001
             log.warning("손절 감시 루프 오류: %s", e)
 
