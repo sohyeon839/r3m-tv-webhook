@@ -55,9 +55,9 @@ import requests
 
 # 증거금 기준 (포지션 규모 = 증거금 × 레버리지)
 MARGIN_USDT = 100.0      # 진입 1번당 증거금
-LEVERAGE = 5             # 기본 레버리지 (신호별로 아래 규칙에서 따로 지정 가능)
-TAKE_PROFIT_PCT = 0.15   # 증거금 대비 +15% 익절 (5배 → 가격 +3%)
-STOP_LOSS_PCT = 0.10     # 증거금 대비 -10% 손절 (5배 → 가격 -2%)
+LEVERAGE = 3             # 기본 레버리지 (신호별로 아래 규칙에서 따로 지정 가능)
+TAKE_PROFIT_PCT = 0.09   # 증거금 대비 +9% 익절 (3배 → 가격 +3%)
+STOP_LOSS_PCT = 0.06     # 증거금 대비 -6% 손절 (3배 → 가격 -2%)
 
 # 종목별로 증거금을 다르게 하고 싶을 때만 추가
 SYMBOL_MARGIN_OVERRIDE = {
@@ -118,9 +118,9 @@ SCREENER_RULES = {
         "tf": "5m",
         "symbols": None,            # 전 종목
         "max_age_sec": 60,          # 뜬 지 1분 이내만
-        "leverage": 5,              # 증거금 100 × 5배 = 포지션 500 USDT
-        "tp_pct": 0.15,             # 증거금 대비 +15% 익절 (5배 → 가격 +3%)
-        "sl_pct": 0.10,             # 증거금 대비 -10% 손절 (5배 → 가격 -2%)
+        "leverage": 3,              # 증거금 100 × 3배 = 포지션 300 USDT
+        "tp_pct": 0.09,             # 증거금 대비 +9% 익절 (3배 → 가격 +3%)
+        "sl_pct": 0.06,             # 증거금 대비 -6% 손절 (3배 → 가격 -2%)
     },
 }
 
@@ -129,9 +129,9 @@ HOOK_RULES = {
         "symbols": None,
         "intervals": {"5"},
         "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
-        "leverage": 5,      # 증거금 100 × 5배 = 포지션 500 USDT
-        "tp_pct": 0.15,     # 증거금 대비 +15% 익절 (5배 → 가격 +3%)
-        "sl_pct": 0.10,     # 증거금 대비 -10% 손절 (5배 → 가격 -2%)
+        "leverage": 3,      # 증거금 100 × 3배 = 포지션 300 USDT
+        "tp_pct": 0.09,     # 증거금 대비 +9% 익절 (3배 → 가격 +3%)
+        "sl_pct": 0.06,     # 증거금 대비 -6% 손절 (3배 → 가격 -2%)
     },
     "atropos": {            # 아트로포스
         "symbols": None,
@@ -143,7 +143,7 @@ HOOK_RULES = {
         "symbols": None,
         "intervals": {"5"},
         "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
-        "leverage": 5,
+        "leverage": 3,
     },
     "square": {             # 스퀘어 (BTC만)
         "symbols": {"BTCUSDT"},
@@ -172,7 +172,7 @@ ZETRO_SIGNAL_RULES = {
         "symbols": None,            # 전 종목
         "tfs": {"5m"},
         "max_age_sec": ZETRO_MAX_SIGNAL_AGE_SEC,
-        "leverage": 5,              # 증거금 100 × 5배 = 포지션 500 USDT
+        "leverage": 3,              # 증거금 100 × 3배 = 포지션 300 USDT
     },
     "아트로포스": {
         "type": "atropos",
@@ -180,9 +180,9 @@ ZETRO_SIGNAL_RULES = {
         "symbols": None,            # BTC 포함 전 종목
         "tfs": {"5m"},
         "max_age_sec": 60,          # 뜬 지 1분 이내만
-        "leverage": 5,              # 증거금 100 × 5배 = 포지션 500 USDT
-        "tp_pct": 0.15,             # 증거금 대비 +15% 익절 (5배 → 가격 +3%)
-        "sl_pct": 0.10,             # 증거금 대비 -10% 손절 (5배 → 가격 -2%)
+        "leverage": 3,              # 증거금 100 × 3배 = 포지션 300 USDT
+        "tp_pct": 0.09,             # 증거금 대비 +9% 익절 (3배 → 가격 +3%)
+        "sl_pct": 0.06,             # 증거금 대비 -6% 손절 (3배 → 가격 -2%)
         "api_entry": False,         # 아트로포스는 아래 스크리너(/screener)로 진입
     },
     "스퀘어": {
