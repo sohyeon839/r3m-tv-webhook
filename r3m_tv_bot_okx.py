@@ -342,6 +342,29 @@ def _daily(key: str, defaults: dict) -> dict:
     return d
 
 
+def reset_sl_on_new_commit() -> None:
+    """GitHub에서 코드를 수정해 새로 배포됐을 때만 오늘 손절 횟수를 0으로 초기화.
+    (서버 재시작·Railway 재시작처럼 코드가 그대로면 초기화 안 함)"""
+    commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    if not commit:
+        log.info("커밋 정보가 없어 손절 횟수 초기화 여부를 판단하지 않음")
+        return
+    last = _state.get("last_commit")
+    _state["last_commit"] = commit
+    if last and last != commit:
+        d = _daily("daily_sl", {"count": 0})
+        before = d.get("count", 0)
+        d["count"] = 0
+        save_state(_state)
+        log.info("새 코드 배포(%s → %s) — 오늘 손절 횟수 %d회 → 0회로 초기화", last[:7], commit[:7], before)
+        if before:
+            notify("🔄 손절 횟수 초기화",
+                   f"코드가 새로 배포돼서 오늘 손절 횟수를 {before}회 → 0회로 초기화했어요.\n"
+                   f"오늘 승패·실현손익·누적 성적은 그대로예요.")
+    else:
+        save_state(_state)
+
+
 def check_daily_sl_limit() -> bool:
     return _daily("daily_sl", {"count": 0})["count"] >= MAX_DAILY_SL_COUNT
 
@@ -1192,6 +1215,7 @@ def main():
 
     _executor = OkxExecutor(api_key=api_key, api_secret=api_secret, passphrase=passphrase)
     _state = load_state()
+    reset_sl_on_new_commit()
     sync_positions_from_exchange()
 
     log.info("상태 파일 위치: %s (%s)", STATE_FILE.resolve(),
