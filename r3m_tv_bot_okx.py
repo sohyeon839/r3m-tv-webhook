@@ -126,6 +126,18 @@ SCREENER_RULES = {
         "tp_pct": 0.12,             # 증거금 대비 +12% 익절 (4배 → 가격 +3%)
         "sl_pct": 0.08,             # 증거금 대비 -8% 손절 (4배 → 가격 -2%)
     },
+    "오라클 저항": {
+        "find": "oracle",           # 오라클 선 닿음 (oracle_touch)
+        "id": None,
+        "kinds": {"l3r", "s4r"},    # 3차 저항선(l3r) · 보조 4차 저항선(s4r) 닿음만 → 숏
+                                    # 지지선도 넣으려면 "l3s", "s4s" 추가 (→ 롱)
+        "tf": "5m",
+        "symbols": None,            # 전 종목
+        "max_age_sec": 180,         # 뜬 지 3분 이내만
+        "leverage": 4,              # 증거금 100 × 4배 = 포지션 400 USDT
+        "tp_pct": 0.12,             # 증거금 대비 +12% 익절 (4배 → 가격 +3%)
+        "sl_pct": 0.08,             # 증거금 대비 -8% 손절 (4배 → 가격 -2%)
+    },
 }
 
 HOOK_NAMES = {"cluster": "클러스터", "atropos": "아트로포스", "dip_diamond": "급락매수다이아", "square": "스퀘어"}
@@ -893,6 +905,9 @@ def screener_poll_loop():
 
                     log.info("스크리너 %s 새 종목: %s %s | 원본=%s", name, symbol, side,
                              json.dumps(it, ensure_ascii=False)[:400])
+                    if rule.get("kinds") and str(it.get("kind", "")).lower() not in rule["kinds"]:
+                        log.info("스크리너 %s: %s kind=%s 라 진입 안 함", name, symbol, it.get("kind"))
+                        continue
                     if rule["symbols"] and symbol not in rule["symbols"]:
                         continue
                     if side not in ("long", "short") or not symbol:
