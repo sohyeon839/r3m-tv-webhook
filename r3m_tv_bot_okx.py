@@ -70,6 +70,20 @@ SYMBOL_MAX_STACK_OVERRIDE = {}
 # 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
 STATS_START_KST = "2026-11-06 01:20"
 
+# ----------------------------------------------------------------------------
+# 포지션 관리: 본절 손절 + 분할 익절 (모두 "가격 기준" %)
+# ----------------------------------------------------------------------------
+MANAGE_ENABLED = True
+MANAGE_POLL_SECONDS = 3            # 3초마다 포지션 확인
+
+# 1) 본절 손절: 가격이 +1.0% 유리하게 가면 손절을 진입가 근처로 올림
+BREAKEVEN_TRIGGER_PCT = 0.010
+BREAKEVEN_BUFFER_PCT = 0.001       # 진입가보다 0.1% 유리한 곳에 손절 (수수료 정도는 남게)
+
+# 2) 분할 익절: 가격이 +1.2% 유리하게 가면 절반을 먼저 청산
+PARTIAL_TP_TRIGGER_PCT = 0.012
+PARTIAL_TP_RATIO = 0.5             # 0.5 = 절반
+
 MAX_DAILY_SL_COUNT = 5    # 하루(한국시간 0시 기준) 손절 5회가 되면 그날은 신규 진입 중지, 0시 지나면 자동 재개
 
 # ----------------------------------------------------------------------------
@@ -596,6 +610,63 @@ class OkxExecutor:
         data = self._request("GET", "/api/v5/account/positions")
         return [p for p in data.get("data", []) if float(p.get("pos", 0)) != 0]
 
+    # -- 포지션 관리용 ------------------------------------------------------
+
+    def round_px(self, inst_id: str, px: float) -> str:
+        tick = float(self.get_instrument(inst_id)["tickSz"])
+        n = round(px / tick) * tick
+        decimals = max(0, -int(math.floor(math.log10(tick)))) if tick < 1 else 0
+        return f"{n:.{decimals}f}"
+
+    def round_sz_down(self, inst_id: str, sz: float) -> float:
+        inst = self.get_instrument(inst_id)
+        lot = float(inst["lotSz"])
+        q = math.floor(sz / lot + 1e-9) * lot
+        decimals = max(0, -int(math.floor(math.log10(lot)))) if lot < 1 else 0
+        q = round(q, decimals)
+        return q if q >= float(inst["minSz"]) else 0.0
+
+    def pending_tpsl_ids(self, inst_id: str) -> list:
+        data = self._request("GET", "/api/v5/trade/orders-algo-pending",
+                             params={"instType": "SWAP", "instId": inst_id, "ordType": "conditional,oco"})
+        return [d["algoId"] for d in data.get("data", []) if d.get("algoId")]
+
+    def cancel_algos(self, inst_id: str, algo_ids: list) -> None:
+        if not algo_ids:
+            return
+        self._request("POST", "/api/v5/trade/cancel-algos",
+                      body=[{"algoId": a, "instId": inst_id} for a in algo_ids])
+
+    def replace_tpsl(self, inst_id: str, side: str, tp_px: float, sl_px: float) -> str:
+        """포지션 전체에 걸리는 익절/손절 주문을 새로 걸고, 기존 익절/손절 주문은 취소."""
+        old = self.pending_tpsl_ids(inst_id)
+        body = {
+            "instId": inst_id,
+            "tdMode": TD_MODE,
+            "side": "buy" if side == "S" else "sell",
+            "ordType": "oco",
+            "closeFraction": "1",
+            "reduceOnly": True,
+            "tpTriggerPx": self.round_px(inst_id, tp_px),
+            "tpOrdPx": "-1",
+            "slTriggerPx": self.round_px(inst_id, sl_px),
+            "slOrdPx": "-1",
+        }
+        data = self._request("POST", "/api/v5/trade/order-algo", body=body)
+        new_id = data["data"][0].get("algoId", "")
+        try:
+            self.cancel_algos(inst_id, [a for a in old if a != new_id])
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s 기존 익절/손절 주문 취소 실패(새 주문은 정상): %s", inst_id, e)
+        return new_id
+
+    def close_partial(self, inst_id: str, side: str, sz: float) -> None:
+        self._request("POST", "/api/v5/trade/order", body={
+            "instId": inst_id, "tdMode": TD_MODE,
+            "side": "buy" if side == "S" else "sell",
+            "ordType": "market", "sz": str(sz), "reduceOnly": True,
+        })
+
 
 _executor: Optional[OkxExecutor] = None
 
@@ -622,6 +693,9 @@ def sync_positions_from_exchange() -> None:
                 "entry": float(p.get("avgPx", 0) or 0),
                 "source": prev.get("source"),
                 "opened_at": prev.get("opened_at"),
+                "tp_px": prev.get("tp_px"),
+                "be_done": prev.get("be_done", False),
+                "partial_done": prev.get("partial_done", False),
             }]
         _state["positions"] = new_positions
         save_state(_state)
@@ -697,6 +771,12 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
     with _state_lock:
         pending_entry["qty"] = qty
         pending_entry["entry"] = ref_price
+        if side == "S":
+            pending_entry["tp_px"] = ref_price * (1 - tp_pct / leverage)
+        else:
+            pending_entry["tp_px"] = ref_price * (1 + tp_pct / leverage)
+        pending_entry["be_done"] = False
+        pending_entry["partial_done"] = False
         pending_entry.pop("pending", None)
         save_state(_state)
         stats = record_trade_result(True)
@@ -1113,6 +1193,76 @@ def heartbeat_loop():
         time.sleep(HEARTBEAT_MINUTES * 60)
 
 
+def manage_positions_loop():
+    """봇이 진입한 포지션을 보면서 본절 손절·분할 익절을 처리."""
+    log.info("포지션 관리 시작: 본절 +%.1f%% / 분할익절 +%.1f%%에서 %d%% 청산",
+             BREAKEVEN_TRIGGER_PCT * 100, PARTIAL_TP_TRIGGER_PCT * 100, int(PARTIAL_TP_RATIO * 100))
+    while True:
+        time.sleep(MANAGE_POLL_SECONDS)
+        if not MANAGE_ENABLED:
+            continue
+        try:
+            live = {p["instId"]: p for p in _executor.get_open_positions()}
+            with _state_lock:
+                targets = []
+                for inst_id, entries in _state.get("positions", {}).items():
+                    if not entries or inst_id not in live:
+                        continue
+                    e = entries[0]
+                    if not e.get("tp_px") or (e.get("be_done") and e.get("partial_done")):
+                        continue   # 봇이 진입한 게 아니거나(수동) 이미 다 처리함
+                    targets.append((inst_id, e))
+
+            for inst_id, e in targets:
+                p = live[inst_id]
+                side = e["side"]
+                entry = float(p.get("avgPx") or e.get("entry") or 0)
+                mark = float(p.get("markPx") or p.get("last") or 0)
+                if not entry or not mark:
+                    continue
+                gain = (mark - entry) / entry if side == "L" else (entry - mark) / entry
+
+                # 1) 본절 손절
+                if not e.get("be_done") and gain >= BREAKEVEN_TRIGGER_PCT:
+                    be_px = entry * (1 + BREAKEVEN_BUFFER_PCT) if side == "L" else entry * (1 - BREAKEVEN_BUFFER_PCT)
+                    try:
+                        _executor.replace_tpsl(inst_id, side, e["tp_px"], be_px)
+                        with _state_lock:
+                            e["be_done"] = True
+                            save_state(_state)
+                        log.info("%s 본절 손절 설정: 손절 → %s (현재 +%.2f%%)", inst_id, be_px, gain * 100)
+                        notify("🛡 본절 손절 설정 (OKX)",
+                               f"📊 종목: {inst_id}{' · ' + e['source'] if e.get('source') else ''}\n"
+                               f"가격이 +{gain * 100:.2f}% 가서 손절을 진입가로 올렸어요.\n"
+                               f"이제 다시 내려와도 손실 없이 끝나요.")
+                    except Exception as ex:  # noqa: BLE001
+                        log.warning("%s 본절 손절 설정 실패: %s", inst_id, format_okx_error(ex))
+
+                # 2) 분할 익절
+                if not e.get("partial_done") and gain >= PARTIAL_TP_TRIGGER_PCT:
+                    pos_sz = abs(float(p.get("pos", 0) or 0))
+                    sz = _executor.round_sz_down(inst_id, pos_sz * PARTIAL_TP_RATIO)
+                    try:
+                        if sz > 0 and sz < pos_sz:
+                            _executor.close_partial(inst_id, side, sz)
+                            log.info("%s 분할 익절: %s / %s 청산 (현재 +%.2f%%)", inst_id, sz, pos_sz, gain * 100)
+                            ct_val = float(_executor.get_instrument(inst_id).get("ctVal", 1))
+                            upl = gain * entry * sz * ct_val
+                            notify("💰 절반 익절 (OKX)",
+                                   f"📊 종목: {inst_id}{' · ' + e['source'] if e.get('source') else ''}\n"
+                                   f"가격 +{gain * 100:.2f}%에서 {int(PARTIAL_TP_RATIO * 100)}% 청산 (약 {upl:+.2f} USDT)\n"
+                                   f"나머지는 익절가까지 가져가요.")
+                        else:
+                            log.info("%s 수량이 너무 적어 분할 익절은 건너뜀", inst_id)
+                        with _state_lock:
+                            e["partial_done"] = True
+                            save_state(_state)
+                    except Exception as ex:  # noqa: BLE001
+                        log.warning("%s 분할 익절 실패: %s", inst_id, format_okx_error(ex))
+        except Exception as ex:  # noqa: BLE001
+            log.warning("포지션 관리 루프 오류: %s", ex)
+
+
 def sl_watch_loop():
     while True:
         time.sleep(120)
@@ -1153,7 +1303,13 @@ def sl_watch_loop():
                     _state.setdefault("positions", {})[inst_id] = []
                     save_state(_state)
 
-                notify(f"{'✅ 익절' if is_win else '🛑 손절'} (OKX)",
+                if not is_win:
+                    title = "🛑 손절"
+                elif pnl < 1.0:
+                    title = "➖ 본절 종료"
+                else:
+                    title = "✅ 익절"
+                notify(f"{title} (OKX)",
                        f"📊 종목: {inst_id}{' · ' + source if source else ''}\n💰 손익: {pnl:+.2f} USDT\n━━━━━━━━━━\n"
                        f"🏆 오늘 {win_loss['win']}승 {win_loss['loss']}패\n"
                        f"💵 당일 실현손익: {daily_pnl['total']:+.2f} USDT\n━━━━━━━━━━\n"
@@ -1226,6 +1382,7 @@ def main():
 
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=sl_watch_loop, daemon=True).start()
+    threading.Thread(target=manage_positions_loop, daemon=True).start()
     if ZETRO_API_KEY:
         threading.Thread(target=zetro_poll_loop, daemon=True).start()
         threading.Thread(target=screener_poll_loop, daemon=True).start()
