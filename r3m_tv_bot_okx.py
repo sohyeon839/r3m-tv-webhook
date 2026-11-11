@@ -158,6 +158,7 @@ HOOK_NAMES = {"cluster": "클러스터", "atropos": "아트로포스", "dip_diam
 
 HOOK_RULES = {
     "cluster": {            # 클러스터 저항/지지 닿음
+        "enabled": False,   # ⛔ 성적 부진으로 꺼둠 (다시 켜려면 True)
         "symbols": None,
         "intervals": {"5"},
         "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
@@ -1089,6 +1090,9 @@ def handle_zetro_hook(text: str) -> None:
 
     rule_name = str(payload.get("rule", "")).strip()
     rule = HOOK_RULES.get(rule_name)
+    if rule is not None and not rule.get("enabled", True):
+        log.info("웹훅 %s: 이 신호는 꺼져 있어서 진입 안 함", rule_name)
+        return
     if not rule:
         log.info("웹훅: 진입 규칙에 없는 알림이라 무시 (rule=%s)", rule_name or "-")
         return
