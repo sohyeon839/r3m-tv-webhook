@@ -70,6 +70,9 @@ SYMBOL_MAX_STACK_OVERRIDE = {}
 # 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
 STATS_START_KST = "2026-11-06 01:20"
 
+# 누적 성적에서 빼버릴 신호 (기록을 지우고 합계에서도 뺌)
+STATS_EXCLUDE_SOURCES = {"클러스터"}
+
 # ----------------------------------------------------------------------------
 # 포지션 관리: 본절 손절 + 분할 익절 (모두 "가격 기준" %)
 # ----------------------------------------------------------------------------
@@ -436,8 +439,24 @@ def _cum_stats() -> dict:
     return st
 
 
+def purge_excluded_sources() -> None:
+    """STATS_EXCLUDE_SOURCES 에 있는 신호 기록을 누적 성적에서 지우고 합계에서도 뺌 (한 번만 적용됨)."""
+    st = _cum_stats()
+    for name in list(st.get("by_source", {})):
+        if name in STATS_EXCLUDE_SOURCES:
+            src = st["by_source"].pop(name)
+            st["win"] -= src.get("win", 0)
+            st["loss"] -= src.get("loss", 0)
+            st["pnl"] -= src.get("pnl", 0.0)
+            log.info("누적 성적에서 %s 기록 삭제 (%d승 %d패, %+.2f USDT)",
+                     name, src.get("win", 0), src.get("loss", 0), src.get("pnl", 0.0))
+    save_state(_state)
+
+
 def record_cum_trade(source: str, pnl: float) -> dict:
     st = _cum_stats()
+    if source in STATS_EXCLUDE_SOURCES:
+        return st
     key = "win" if pnl >= 0 else "loss"
     st[key] += 1
     st["pnl"] += pnl
@@ -1376,6 +1395,7 @@ def main():
     _executor = OkxExecutor(api_key=api_key, api_secret=api_secret, passphrase=passphrase)
     _state = load_state()
     reset_sl_on_new_commit()
+    purge_excluded_sources()
     sync_positions_from_exchange()
 
     log.info("상태 파일 위치: %s (%s)", STATE_FILE.resolve(),
