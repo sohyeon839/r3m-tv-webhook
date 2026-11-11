@@ -1150,7 +1150,7 @@ def handle_zetro_hook(text: str) -> None:
 # 정기 리포트 / 익절·손절 감시
 # ----------------------------------------------------------------------------
 
-HEARTBEAT_MINUTES = 5   # 정기 리포트 주기(분)
+HEARTBEAT_MINUTES = 10   # 정기 리포트 주기(분)
 
 
 def heartbeat_loop():
