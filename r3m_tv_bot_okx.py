@@ -56,6 +56,11 @@ import requests
 # 증거금 기준 (포지션 규모 = 증거금 × 레버리지)
 MARGIN_USDT = 300.0      # 진입 1번당 증거금
 LEVERAGE = 3             # 기본 레버리지 (신호별로 아래 규칙에서 따로 지정 가능)
+
+# 방향별 배율 (모든 신호 공통으로 우선 적용). None이면 신호별 설정을 따름.
+# 익절·손절은 "가격 기준 거리"가 같게 자동으로 맞춰져요.
+LONG_LEVERAGE = 2        # 롱은 무조건 2배
+SHORT_LEVERAGE = 3       # 숏은 무조건 3배
 TAKE_PROFIT_PCT = 0.10   # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
 STOP_LOSS_PCT = 0.05     # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
 
@@ -157,7 +162,8 @@ SCREENER_RULES = {
     },
 }
 
-HOOK_NAMES = {"cluster": "클러스터", "atropos": "아트로포스", "dip_diamond": "급락매수다이아", "square": "스퀘어"}
+HOOK_NAMES = {"cluster": "클러스터", "atropos": "아트로포스", "oracle": "오라클 저항",
+              "dip_diamond": "급락매수다이아", "square": "스퀘어"}
 
 HOOK_RULES = {
     "cluster": {            # 클러스터 저항/지지 닿음
@@ -169,19 +175,28 @@ HOOK_RULES = {
         "tp_pct": 0.10,     # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
         "sl_pct": 0.05,     # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
     },
-    "atropos": {            # 아트로포스
+    "atropos": {            # 아트로포스 (API 키가 멈췄을 때 zetro 알림으로 대신 받기)
         "symbols": None,
         "intervals": {"5"},
         "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
         "leverage": LEVERAGE,
     },
+    "oracle": {             # 오라클 저항 (API 키가 멈췄을 때 zetro 알림으로 대신 받기)
+        "symbols": None,
+        "intervals": {"5"},
+        "sides": {"short"},   # 저항 닿음 → 숏만
+        "max_age_sec": 600,
+        "leverage": LEVERAGE,
+    },
     "dip_diamond": {        # 급락 매수 다이아
+        "enabled": False,
         "symbols": None,
         "intervals": {"5"},
         "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
         "leverage": 3,
     },
     "square": {             # 스퀘어 (BTC만)
+        "enabled": False,
         "symbols": {"BTCUSDT"},
         "intervals": {"5"},
         "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
@@ -437,6 +452,16 @@ def _cum_stats() -> dict:
         st.update({"start": STATS_START_KST, "win": 0, "loss": 0, "pnl": 0.0,
                    "best": None, "worst": None, "by_source": {}})
     return st
+
+
+def rename_old_sources() -> None:
+    """롱/숏으로 나누기 전 기록은 '(나누기 전)'으로 이름 바꿔서 남김."""
+    st = _cum_stats()
+    bs = st.get("by_source", {})
+    for name in list(bs):
+        if not name.endswith((" 롱", " 숏", "(나누기 전)")):
+            bs[f"{name} (나누기 전)"] = bs.pop(name)
+    save_state(_state)
 
 
 def purge_excluded_sources() -> None:
@@ -767,6 +792,12 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
             save_state(_state)
             return get_trade_stats()
 
+    # 방향별 배율 적용 (가격 기준 익절·손절 거리는 그대로 유지)
+    forced = LONG_LEVERAGE if side == "L" else SHORT_LEVERAGE
+    if forced and forced != leverage:
+        tp_pct = tp_pct * forced / leverage
+        sl_pct = sl_pct * forced / leverage
+        leverage = forced
     notional = SYMBOL_MARGIN_OVERRIDE.get(inst_id, MARGIN_USDT) * leverage
     try:
         ref_price = _executor.get_mark_price(inst_id)
@@ -1125,6 +1156,9 @@ def handle_zetro_hook(text: str) -> None:
     if not ticker or not side:
         log.info("웹훅: 종목/방향을 알 수 없어 무시: %s", text[:300])
         return
+    if rule.get("sides") and side not in rule["sides"]:
+        log.info("웹훅 %s: %s 방향이라 진입 안 함", rule_name, side)
+        return
     if rule["intervals"] and interval not in rule["intervals"]:
         log.info("웹훅 %s: %s봉이라 무시 (5분봉만)", rule_name, interval)
         return
@@ -1302,6 +1336,8 @@ def sl_watch_loop():
                     has_real_entry = any(e.get("qty") for e in entries)
                     tracked = [e for e in entries if e.get("qty") and (e.get("opened_at") or 0) >= _stats_start_ms()]
                     source = (tracked[0].get("source") or "기타") if tracked else None
+                    if source:
+                        source = f"{source} {'롱' if tracked[0].get('side') == 'L' else '숏'}"
                     if not has_real_entry:
                         # 주문 진행 중인 예약 자리는 건드리지 않음
                         if not any(e.get("pending") for e in entries):
@@ -1396,6 +1432,7 @@ def main():
     _state = load_state()
     reset_sl_on_new_commit()
     purge_excluded_sources()
+    rename_old_sources()
     sync_positions_from_exchange()
 
     log.info("상태 파일 위치: %s (%s)", STATE_FILE.resolve(),
@@ -1421,4 +1458,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
