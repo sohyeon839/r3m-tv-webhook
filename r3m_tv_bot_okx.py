@@ -454,13 +454,21 @@ def _cum_stats() -> dict:
     return st
 
 
-def rename_old_sources() -> None:
-    """롱/숏으로 나누기 전 기록은 '(나누기 전)'으로 이름 바꿔서 남김."""
+def merge_split_sources() -> None:
+    """'아트로포스 롱', '아트로포스 숏', '아트로포스 (나누기 전)' 처럼 나뉜 기록을 신호별로 다시 합침."""
     st = _cum_stats()
     bs = st.get("by_source", {})
     for name in list(bs):
-        if not name.endswith((" 롱", " 숏", "(나누기 전)")):
-            bs[f"{name} (나누기 전)"] = bs.pop(name)
+        base = name
+        for suf in (" (나누기 전)", " 롱", " 숏"):
+            if base.endswith(suf):
+                base = base[: -len(suf)]
+        if base != name:
+            src = bs.pop(name)
+            dst = bs.setdefault(base, {"win": 0, "loss": 0, "pnl": 0.0})
+            dst["win"] += src.get("win", 0)
+            dst["loss"] += src.get("loss", 0)
+            dst["pnl"] += src.get("pnl", 0.0)
     save_state(_state)
 
 
@@ -1336,8 +1344,6 @@ def sl_watch_loop():
                     has_real_entry = any(e.get("qty") for e in entries)
                     tracked = [e for e in entries if e.get("qty") and (e.get("opened_at") or 0) >= _stats_start_ms()]
                     source = (tracked[0].get("source") or "기타") if tracked else None
-                    if source:
-                        source = f"{source} {'롱' if tracked[0].get('side') == 'L' else '숏'}"
                     if not has_real_entry:
                         # 주문 진행 중인 예약 자리는 건드리지 않음
                         if not any(e.get("pending") for e in entries):
@@ -1432,7 +1438,7 @@ def main():
     _state = load_state()
     reset_sl_on_new_commit()
     purge_excluded_sources()
-    rename_old_sources()
+    merge_split_sources()
     sync_positions_from_exchange()
 
     log.info("상태 파일 위치: %s (%s)", STATE_FILE.resolve(),
