@@ -59,8 +59,9 @@ LEVERAGE = 3             # 기본 레버리지 (신호별로 아래 규칙에서
 
 # 방향별 배율 (모든 신호 공통으로 우선 적용). None이면 신호별 설정을 따름.
 # 익절·손절은 "가격 기준 거리"가 같게 자동으로 맞춰져요.
-LONG_LEVERAGE = 2        # 롱은 무조건 2배
-SHORT_LEVERAGE = 3       # 숏은 무조건 3배
+LONG_ENTRY_ENABLED = False  # ⛔ 하락장이라 롱 진입 끔 (다시 켜려면 True)
+LONG_LEVERAGE = 3        # 롱은 무조건 3배 (롱을 다시 켤 때 적용)
+SHORT_LEVERAGE = 5       # 숏은 무조건 5배 (증거금 300 → 포지션 1500)
 TAKE_PROFIT_PCT = 0.10   # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
 STOP_LOSS_PCT = 0.05     # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
 
@@ -92,7 +93,7 @@ BREAKEVEN_BUFFER_PCT = 0.001       # 진입가보다 0.1% 유리한 곳에 손�
 PARTIAL_TP_TRIGGER_PCT = 0.012
 PARTIAL_TP_RATIO = 0.5             # 0.5 = 절반
 
-MAX_DAILY_SL_COUNT = 5    # 하루(한국시간 0시 기준) 손절 5회가 되면 그날은 신규 진입 중지, 0시 지나면 자동 재개
+MAX_DAILY_SL_COUNT = 3    # 하루(한국시간 0시 기준) 손절 3회가 되면 그날은 신규 진입 중지, 0시 지나면 자동 재개
 
 # ----------------------------------------------------------------------------
 # zetro 신호 설정
@@ -768,6 +769,9 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
                    source: str = "기타") -> None:
     inst_id = normalize_symbol(symbol)
     side = "S" if side_raw == "short" else "L"
+    if side == "L" and not LONG_ENTRY_ENABLED:
+        log.info("롱 진입 꺼짐 — %s %s 롱 신호 무시", source, inst_id)
+        return
 
     with _state_lock:
         if check_daily_sl_limit():
