@@ -54,7 +54,7 @@ import requests
 # ----------------------------------------------------------------------------
 
 # 증거금 기준 (포지션 규모 = 증거금 × 레버리지)
-MARGIN_USDT = 200.0      # 진입 1번당 증거금
+MARGIN_USDT = 200.0      # 진입 1번당 기본 증거금 (신호별 "margin"이 있으면 그 값 우선)
 LEVERAGE = 3             # 기본 레버리지 (신호별로 아래 규칙에서 따로 지정 가능)
 
 # 방향별 배율 (모든 신호 공통으로 우선 적용). None이면 신호별 설정을 따름.
@@ -145,7 +145,8 @@ SCREENER_RULES = {
         "tf": "5m",
         "symbols": None,            # 전 종목
         "max_age_sec": 60,          # 뜬 지 1분 이내만
-        "leverage": 3,              # 증거금 300 × 3배 = 포지션 900 USDT
+        "margin": 200,              # 아트로포스 증거금 200 USDT (× 3배 = 포지션 600)
+        "leverage": 3,
         "tp_pct": 0.10,             # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
         "sl_pct": 0.05,             # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
     },
@@ -157,7 +158,8 @@ SCREENER_RULES = {
         "tf": "5m",
         "symbols": None,            # 전 종목
         "max_age_sec": 180,         # 뜬 지 3분 이내만
-        "leverage": 3,              # 증거금 300 × 3배 = 포지션 900 USDT
+        "margin": 300,              # 오라클 저항 증거금 300 USDT (× 3배 = 포지션 900)
+        "leverage": 3,
         "tp_pct": 0.10,             # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
         "sl_pct": 0.05,             # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
     },
@@ -177,12 +179,14 @@ HOOK_RULES = {
         "sl_pct": 0.05,     # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
     },
     "atropos": {            # 아트로포스 (API 키가 멈췄을 때 zetro 알림으로 대신 받기)
+        "margin": 200,
         "symbols": None,
         "intervals": {"5"},
         "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
         "leverage": LEVERAGE,
     },
     "oracle": {             # 오라클 저항 (API 키가 멈췄을 때 zetro 알림으로 대신 받기)
+        "margin": 300,
         "symbols": None,
         "intervals": {"5"},
         "sides": {"short"},   # 저항 닿음 → 숏만
@@ -766,7 +770,7 @@ def sync_positions_from_exchange() -> None:
 
 def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
                    tp_pct: float = TAKE_PROFIT_PCT, sl_pct: float = STOP_LOSS_PCT,
-                   source: str = "기타") -> None:
+                   source: str = "기타", margin: Optional[float] = None) -> None:
     inst_id = normalize_symbol(symbol)
     side = "S" if side_raw == "short" else "L"
     if side == "L" and not LONG_ENTRY_ENABLED:
@@ -810,7 +814,8 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
         tp_pct = tp_pct * forced / leverage
         sl_pct = sl_pct * forced / leverage
         leverage = forced
-    notional = SYMBOL_MARGIN_OVERRIDE.get(inst_id, MARGIN_USDT) * leverage
+    base_margin = margin if margin else MARGIN_USDT
+    notional = SYMBOL_MARGIN_OVERRIDE.get(inst_id, base_margin) * leverage
     try:
         ref_price = _executor.get_mark_price(inst_id)
         qty = _executor.open_position(inst_id, side, notional, ref_price,
@@ -1089,7 +1094,7 @@ def screener_poll_loop():
                     log.info("스크리너 %s 신호로 진입 시도: %s %s", name, symbol, side)
                     try:
                         enter_position(symbol, side, rule["leverage"], rule["tp_pct"], rule["sl_pct"],
-                                       source=name)
+                                       source=name, margin=rule.get("margin"))
                     except Exception as e:  # noqa: BLE001
                         log.error("스크리너 진입 처리 실패: %s", e)
                 first_run[name] = False
@@ -1212,7 +1217,7 @@ def handle_zetro_hook(text: str) -> None:
     log.info("웹훅 %s 신호로 진입 시도: %s %s", rule_name, symbol, side)
     enter_position(symbol, side, rule["leverage"],
                    rule.get("tp_pct", TAKE_PROFIT_PCT), rule.get("sl_pct", STOP_LOSS_PCT),
-                   source=HOOK_NAMES.get(rule_name, rule_name))
+                   source=HOOK_NAMES.get(rule_name, rule_name), margin=rule.get("margin"))
 
 
 # ----------------------------------------------------------------------------
