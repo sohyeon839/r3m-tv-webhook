@@ -91,7 +91,7 @@ BREAKEVEN_BUFFER_PCT = 0.001       # 진입가보다 0.1% 유리한 곳에 손�
 
 # 2) 분할 익절: 가격이 +1.2% 유리하게 가면 절반을 먼저 청산
 PARTIAL_TP_TRIGGER_PCT = 0.012
-PARTIAL_TP_RATIO = 0.5             # 0.5 = 절반
+PARTIAL_TP_RATIO = 0.25            # 0.25 = 25% 먼저 청산
 
 MAX_DAILY_SL_COUNT = 5    # 하루(한국시간 0시 기준) 손절 5회가 되면 그날은 신규 진입 중지, 0시 지나면 자동 재개
 
@@ -1322,7 +1322,7 @@ def manage_positions_loop():
                             log.info("%s 분할 익절: %s / %s 청산 (현재 +%.2f%%)", inst_id, sz, pos_sz, gain * 100)
                             ct_val = float(_executor.get_instrument(inst_id).get("ctVal", 1))
                             upl = gain * entry * sz * ct_val
-                            notify("💰 절반 익절 (OKX)",
+                            notify("💰 분할 익절 (OKX)",
                                    f"📊 종목: {inst_id}{' · ' + e['source'] if e.get('source') else ''}\n"
                                    f"가격 +{gain * 100:.2f}%에서 {int(PARTIAL_TP_RATIO * 100)}% 청산 (약 {upl:+.2f} USDT)\n"
                                    f"나머지는 익절가까지 가져가요.")
@@ -1473,4 +1473,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
