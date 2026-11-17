@@ -93,6 +93,11 @@ BREAKEVEN_BUFFER_PCT = 0.001       # 진입가보다 0.1% 유리한 곳에 손�
 PARTIAL_TP_TRIGGER_PCT = 0.012
 PARTIAL_TP_RATIO = 0.25            # 0.25 = 25% 먼저 청산
 
+# 3) 단계 손절: 가격이 +2.0% 유리하게 가면 손절을 +1.0% 수익 자리로 올림
+#    (3배 기준 OKX 화면: +6% 도달 → 손절을 +3%로)
+STEP_TRIGGER_PCT = 0.020
+STEP_LOCK_PCT = 0.010
+
 MAX_DAILY_SL_COUNT = 5    # 하루(한국시간 0시 기준) 손절 5회가 되면 그날은 신규 진입 중지, 0시 지나면 자동 재개
 
 # ----------------------------------------------------------------------------
@@ -754,6 +759,7 @@ def sync_positions_from_exchange() -> None:
                 "tp_px": prev.get("tp_px"),
                 "be_done": prev.get("be_done", False),
                 "partial_done": prev.get("partial_done", False),
+                "step_done": prev.get("step_done", False),
             }]
         _state["positions"] = new_positions
         save_state(_state)
@@ -845,6 +851,7 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
             pending_entry["tp_px"] = ref_price * (1 + tp_pct / leverage)
         pending_entry["be_done"] = False
         pending_entry["partial_done"] = False
+        pending_entry["step_done"] = False
         pending_entry.pop("pending", None)
         save_state(_state)
         stats = record_trade_result(True)
@@ -1269,8 +1276,9 @@ def heartbeat_loop():
 
 def manage_positions_loop():
     """봇이 진입한 포지션을 보면서 본절 손절·분할 익절을 처리."""
-    log.info("포지션 관리 시작: 본절 +%.1f%% / 분할익절 +%.1f%%에서 %d%% 청산",
-             BREAKEVEN_TRIGGER_PCT * 100, PARTIAL_TP_TRIGGER_PCT * 100, int(PARTIAL_TP_RATIO * 100))
+    log.info("포지션 관리 시작: 본절 +%.1f%% / 분할익절 +%.1f%%에서 %d%% 청산 / +%.1f%%에서 손절을 +%.1f%%로",
+             BREAKEVEN_TRIGGER_PCT * 100, PARTIAL_TP_TRIGGER_PCT * 100, int(PARTIAL_TP_RATIO * 100),
+             STEP_TRIGGER_PCT * 100, STEP_LOCK_PCT * 100)
     while True:
         time.sleep(MANAGE_POLL_SECONDS)
         if not MANAGE_ENABLED:
@@ -1283,7 +1291,7 @@ def manage_positions_loop():
                     if not entries or inst_id not in live:
                         continue
                     e = entries[0]
-                    if not e.get("tp_px") or (e.get("be_done") and e.get("partial_done")):
+                    if not e.get("tp_px") or (e.get("be_done") and e.get("partial_done") and e.get("step_done")):
                         continue   # 봇이 진입한 게 아니거나(수동) 이미 다 처리함
                     targets.append((inst_id, e))
 
@@ -1333,6 +1341,23 @@ def manage_positions_loop():
                             save_state(_state)
                     except Exception as ex:  # noqa: BLE001
                         log.warning("%s 분할 익절 실패: %s", inst_id, format_okx_error(ex))
+
+                # 3) 단계 손절: 수익 일부 확보
+                if not e.get("step_done") and gain >= STEP_TRIGGER_PCT:
+                    lock_px = entry * (1 + STEP_LOCK_PCT) if side == "L" else entry * (1 - STEP_LOCK_PCT)
+                    try:
+                        _executor.replace_tpsl(inst_id, side, e["tp_px"], lock_px)
+                        with _state_lock:
+                            e["step_done"] = True
+                            e["be_done"] = True
+                            save_state(_state)
+                        log.info("%s 단계 손절: 손절 → %s (현재 +%.2f%%)", inst_id, lock_px, gain * 100)
+                        notify("🔒 수익 확보 (OKX)",
+                               f"📊 종목: {inst_id}{' · ' + e['source'] if e.get('source') else ''}\n"
+                               f"가격이 +{gain * 100:.2f}% 가서 손절을 +{STEP_LOCK_PCT * 100:.1f}% 자리로 올렸어요.\n"
+                               f"이제 돌아와도 수익을 챙기고 끝나요.")
+                    except Exception as ex:  # noqa: BLE001
+                        log.warning("%s 단계 손절 설정 실패: %s", inst_id, format_okx_error(ex))
         except Exception as ex:  # noqa: BLE001
             log.warning("포지션 관리 루프 오류: %s", ex)
 
@@ -1469,7 +1494,6 @@ def main():
     server = ThreadingHTTPServer(("0.0.0.0", PORT), HealthHandler)
     server.daemon_threads = True
     server.serve_forever()
-
 
 
 if __name__ == "__main__":
