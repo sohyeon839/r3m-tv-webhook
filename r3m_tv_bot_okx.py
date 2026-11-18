@@ -74,7 +74,7 @@ MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추�
 SYMBOL_MAX_STACK_OVERRIDE = {}
 # 누적 성적 집계 시작 시각 (한국시간). 이 시각 이후 봇이 진입한 거래만 집계해요.
 # 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
-STATS_START_KST = "2026-11-06 01:20"
+STATS_START_KST = "2026-11-18 20:30"
 
 # 누적 성적에서 빼버릴 신호 (기록을 지우고 합계에서도 뺌)
 STATS_EXCLUDE_SOURCES = {"클러스터"}
@@ -761,6 +761,8 @@ def sync_positions_from_exchange() -> None:
                 "be_done": prev.get("be_done", False),
                 "partial_done": prev.get("partial_done", False),
                 "step_done": prev.get("step_done", False),
+                # 봇이 진입한 기록(tp_px)이 없으면 수동 포지션으로 보고 성적·손절 횟수에서 제외
+                "manual": not prev.get("tp_px"),
             }]
         _state["positions"] = new_positions
         save_state(_state)
@@ -1384,6 +1386,12 @@ def sl_watch_loop():
                     has_real_entry = any(e.get("qty") for e in entries)
                     tracked = [e for e in entries if e.get("qty") and (e.get("opened_at") or 0) >= _stats_start_ms()]
                     source = (tracked[0].get("source") or "기타") if tracked else None
+                    is_manual = bool(entries) and (entries[0].get("manual") or not entries[0].get("tp_px"))
+                    if has_real_entry and is_manual:
+                        _state["positions"][inst_id] = []
+                        save_state(_state)
+                        log.info("%s 수동 포지션 종료 — 성적·손절 횟수에 넣지 않음", inst_id)
+                        continue
                     if not has_real_entry:
                         # 주문 진행 중인 예약 자리는 건드리지 않음
                         if not any(e.get("pending") for e in entries):
