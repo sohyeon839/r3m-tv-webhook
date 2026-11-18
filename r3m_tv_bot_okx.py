@@ -86,12 +86,12 @@ MANAGE_ENABLED = True
 MANAGE_POLL_SECONDS = 3            # 3초마다 포지션 확인
 
 # 1) 본절 손절: 가격이 +1.0% 유리하게 가면 손절을 진입가 근처로 올림
-BREAKEVEN_TRIGGER_PCT = 0.010
+BREAKEVEN_TRIGGER_PCT = 0.012     # 분할 익절과 같은 시점(+1.2%)에 본절로
 BREAKEVEN_BUFFER_PCT = 0.001       # 진입가보다 0.1% 유리한 곳에 손절 (수수료 정도는 남게)
 
 # 2) 분할 익절: 가격이 +1.2% 유리하게 가면 절반을 먼저 청산
 PARTIAL_TP_TRIGGER_PCT = 0.012
-PARTIAL_TP_RATIO = 0.25            # 0.25 = 25% 먼저 청산
+PARTIAL_TP_RATIO = 0.5             # 0.5 = 절반 먼저 청산
 
 # 3) 단계 손절: 가격이 +2.0% 유리하게 가면 손절을 +1.0% 수익 자리로 올림
 #    (3배 기준 OKX 화면: +6% 도달 → 손절을 +3%로)
@@ -152,7 +152,7 @@ SCREENER_RULES = {
         "max_age_sec": 60,          # 뜬 지 1분 이내만
         "margin": 200,              # 아트로포스 증거금 200 USDT (× 3배 = 포지션 600)
         "leverage": 3,
-        "tp_pct": 0.10,             # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
+        "tp_pct": 0.06,             # 증거금 대비 +6% 익절 (3배 → 가격 +2.0%) — 스크리너 최대수익 분석 반영
         "sl_pct": 0.05,             # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
     },
     "오라클 저항": {
@@ -185,6 +185,7 @@ HOOK_RULES = {
     },
     "atropos": {            # 아트로포스 (API 키가 멈췄을 때 zetro 알림으로 대신 받기)
         "margin": 200,
+        "tp_pct": 0.06,     # 가격 +2.0% (3배 기준)
         "symbols": None,
         "intervals": {"5"},
         "max_age_sec": 600,   # zetro가 보내는 time은 봉 시작 시각이라 5분봉+여유로 10분
@@ -1342,7 +1343,12 @@ def manage_positions_loop():
                     except Exception as ex:  # noqa: BLE001
                         log.warning("%s 분할 익절 실패: %s", inst_id, format_okx_error(ex))
 
-                # 3) 단계 손절: 수익 일부 확보
+                # 3) 단계 손절: 수익 일부 확보 (최종 익절이 이 지점보다 가까우면 필요 없음)
+                tp_dist = abs(e["tp_px"] - entry) / entry if entry else 0
+                if not e.get("step_done") and tp_dist <= STEP_TRIGGER_PCT + 0.002:
+                    with _state_lock:
+                        e["step_done"] = True
+                        save_state(_state)
                 if not e.get("step_done") and gain >= STEP_TRIGGER_PCT:
                     lock_px = entry * (1 + STEP_LOCK_PCT) if side == "L" else entry * (1 - STEP_LOCK_PCT)
                     try:
