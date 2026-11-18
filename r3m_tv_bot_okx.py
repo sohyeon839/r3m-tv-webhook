@@ -54,7 +54,7 @@ import requests
 # ----------------------------------------------------------------------------
 
 # 증거금 기준 (포지션 규모 = 증거금 × 레버리지)
-MARGIN_USDT = 200.0      # 진입 1번당 기본 증거금 (신호별 "margin"이 있으면 그 값 우선)
+MARGIN_USDT = 150.0      # 진입 1번당 증거금 (모든 신호 공통)
 LEVERAGE = 3             # 기본 레버리지 (신호별로 아래 규칙에서 따로 지정 가능)
 
 # 방향별 배율 (모든 신호 공통으로 우선 적용). None이면 신호별 설정을 따름.
@@ -98,7 +98,9 @@ PARTIAL_TP_RATIO = 0.5             # 0.5 = 절반 먼저 청산
 STEP_TRIGGER_PCT = 0.020
 STEP_LOCK_PCT = 0.010
 
-MAX_DAILY_SL_COUNT = 5    # 하루(한국시간 0시 기준) 손절 5회가 되면 그날은 신규 진입 중지, 0시 지나면 자동 재개
+MAX_DAILY_SL_COUNT = 0    # 손절 "횟수" 한도 (0 = 사용 안 함, 아래 손실 % 한도를 사용)
+# 하루(한국시간 0시 기준) 봇 실현손실이 그날 시작 잔고의 5%가 되면 신규 진입 중지, 0시 지나면 자동 재개
+MAX_DAILY_LOSS_PCT = 0.05
 
 # ----------------------------------------------------------------------------
 # zetro 신호 설정
@@ -150,7 +152,7 @@ SCREENER_RULES = {
         "tf": "5m",
         "symbols": None,            # 전 종목
         "max_age_sec": 60,          # 뜬 지 1분 이내만
-        "margin": 200,              # 아트로포스 증거금 200 USDT (× 3배 = 포지션 600)
+        "margin": 150,              # 증거금 150 USDT (× 3배 = 포지션 450)
         "leverage": 3,
         "tp_pct": 0.06,             # 증거금 대비 +6% 익절 (3배 → 가격 +2.0%) — 스크리너 최대수익 분석 반영
         "sl_pct": 0.05,             # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
@@ -163,7 +165,7 @@ SCREENER_RULES = {
         "tf": "5m",
         "symbols": None,            # 전 종목
         "max_age_sec": 180,         # 뜬 지 3분 이내만
-        "margin": 300,              # 오라클 저항 증거금 300 USDT (× 3배 = 포지션 900)
+        "margin": 150,              # 증거금 150 USDT (× 3배 = 포지션 450)
         "leverage": 3,
         "tp_pct": 0.10,             # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
         "sl_pct": 0.05,             # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
@@ -184,7 +186,7 @@ HOOK_RULES = {
         "sl_pct": 0.05,     # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
     },
     "atropos": {            # 아트로포스 (API 키가 멈췄을 때 zetro 알림으로 대신 받기)
-        "margin": 200,
+        "margin": 150,
         "tp_pct": 0.06,     # 가격 +2.0% (3배 기준)
         "symbols": None,
         "intervals": {"5"},
@@ -192,7 +194,7 @@ HOOK_RULES = {
         "leverage": LEVERAGE,
     },
     "oracle": {             # 오라클 저항 (API 키가 멈췄을 때 zetro 알림으로 대신 받기)
-        "margin": 300,
+        "margin": 150,
         "symbols": None,
         "intervals": {"5"},
         "sides": {"short"},   # 저항 닿음 → 숏만
@@ -399,26 +401,63 @@ def reset_sl_on_new_commit() -> None:
         d = _daily("daily_sl", {"count": 0})
         before = d.get("count", 0)
         d["count"] = 0
+        base = _daily("daily_base", {"eq": None, "anchor_pnl": 0.0, "notified": False})
+        base["eq"] = None          # 다음 리포트 때 현재 잔고로 기준 다시 잡음
+        base["notified"] = False
         save_state(_state)
         log.info("새 코드 배포(%s → %s) — 오늘 손절 횟수 %d회 → 0회로 초기화", last[:7], commit[:7], before)
         if before:
-            notify("🔄 손절 횟수 초기화",
-                   f"코드가 새로 배포돼서 오늘 손절 횟수를 {before}회 → 0회로 초기화했어요.\n"
+            notify("🔄 오늘 손실 한도 초기화",
+                   f"코드가 새로 배포돼서 오늘 손실 한도를 다시 시작했어요.\n"
                    f"오늘 승패·실현손익·누적 성적은 그대로예요.")
     else:
         save_state(_state)
 
 
+def ensure_daily_base(eq: Optional[float] = None) -> None:
+    """오늘 손실 한도 기준이 될 '오늘 시작 잔고'를 하루 한 번 기록."""
+    d = _daily("daily_base", {"eq": None, "anchor_pnl": 0.0, "notified": False})
+    if d.get("eq") is None and eq:
+        d["eq"] = float(eq)
+        d["anchor_pnl"] = _daily("daily_pnl", {"total": 0.0})["total"]
+        save_state(_state)
+        log.info("오늘 손실 한도 기준 잔고: %.2f USDT (한도 -%.2f)", eq, eq * MAX_DAILY_LOSS_PCT)
+
+
+def daily_loss_info() -> tuple:
+    """(오늘 손실액, 한도액) — 한도액이 없으면 None"""
+    d = _daily("daily_base", {"eq": None, "anchor_pnl": 0.0, "notified": False})
+    if not d.get("eq") or not MAX_DAILY_LOSS_PCT:
+        return 0.0, None
+    total = _daily("daily_pnl", {"total": 0.0})["total"] - d.get("anchor_pnl", 0.0)
+    return total, d["eq"] * MAX_DAILY_LOSS_PCT
+
+
 def check_daily_sl_limit() -> bool:
-    return _daily("daily_sl", {"count": 0})["count"] >= MAX_DAILY_SL_COUNT
+    if MAX_DAILY_SL_COUNT and _daily("daily_sl", {"count": 0})["count"] >= MAX_DAILY_SL_COUNT:
+        return True
+    loss, limit = daily_loss_info()
+    return limit is not None and loss <= -limit
+
+
+def maybe_notify_loss_limit() -> None:
+    loss, limit = daily_loss_info()
+    d = _daily("daily_base", {"eq": None, "anchor_pnl": 0.0, "notified": False})
+    if limit is not None and loss <= -limit and not d.get("notified"):
+        d["notified"] = True
+        save_state(_state)
+        notify("⛔ 오늘 자동매매 중지",
+               f"오늘 손실 {loss:+.2f} USDT로 한도(-{limit:.2f}, 시작 잔고의 {MAX_DAILY_LOSS_PCT * 100:.0f}%)에 도달했어요.\n"
+               f"이미 열린 포지션은 익절/손절 그대로 유지되고,\n"
+               f"내일 한국시간 0시에 자동으로 다시 시작해요.")
 
 
 def record_sl_hit() -> None:
     d = _daily("daily_sl", {"count": 0})
     d["count"] += 1
     save_state(_state)
-    log.warning("오늘 손절 %d회째 발생 (한도 %d회)", d["count"], MAX_DAILY_SL_COUNT)
-    if d["count"] == MAX_DAILY_SL_COUNT:
+    log.warning("오늘 손절 %d회째 발생", d["count"])
+    if MAX_DAILY_SL_COUNT and d["count"] == MAX_DAILY_SL_COUNT:
         notify("⛔ 오늘 자동매매 중지",
                f"오늘 손절 {MAX_DAILY_SL_COUNT}회에 도달해서 신규 진입을 멈춥니다.\n"
                f"이미 열린 포지션은 익절/손절 그대로 유지되고,\n"
@@ -788,7 +827,7 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
 
     with _state_lock:
         if check_daily_sl_limit():
-            log.info("오늘 손절 한도(%d회) 도달로 신규 진입 스킵: %s", MAX_DAILY_SL_COUNT, inst_id)
+            log.info("오늘 손실 한도 도달로 신규 진입 스킵: %s", inst_id)
             return
 
         max_stack = SYMBOL_MAX_STACK_OVERRIDE.get(inst_id, MAX_STACK_POSITIONS)
@@ -1243,6 +1282,8 @@ def heartbeat_loop():
         try:
             summary = _executor.get_account_summary()
             upl = summary["unrealized_pnl"]
+            with _state_lock:
+                ensure_daily_base(summary["usdt_balance"] - upl)
             open_positions = _executor.get_open_positions()
             if open_positions:
                 lines = []
@@ -1262,7 +1303,12 @@ def heartbeat_loop():
                 pnl_today = _daily("daily_pnl", {"total": 0.0})["total"]
                 sl_count = _daily("daily_sl", {"count": 0})["count"]
                 cum_text = format_cum_stats()
-            stopped = "\n⛔ 오늘 손절 한도 도달 — 신규 진입 중지 중" if sl_count >= MAX_DAILY_SL_COUNT else ""
+            with _state_lock:
+                loss_now, loss_limit = daily_loss_info()
+                stopped_flag = check_daily_sl_limit()
+            stopped = "\n⛔ 오늘 손실 한도 도달 — 신규 진입 중지 중" if stopped_flag else ""
+            if loss_limit is not None:
+                stopped = f"\n🧯 오늘 손실 한도: {loss_now:+.2f} / -{loss_limit:.2f} USDT" + stopped
 
             notify("📊 정기 리포트 (OKX)",
                    f"━━━━━━━━━━\n💰 USDT 잔고: {summary['usdt_balance']:.2f}\n"
@@ -1410,6 +1456,7 @@ def sl_watch_loop():
                         record_sl_hit()
                     win_loss = record_win_loss(is_win)
                     daily_pnl = record_daily_pnl(pnl)
+                    maybe_notify_loss_limit()
                     if source:
                         record_cum_trade(source, pnl)
                     cum_text = format_cum_stats()
