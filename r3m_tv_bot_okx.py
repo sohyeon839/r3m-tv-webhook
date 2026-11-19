@@ -78,7 +78,7 @@ MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추�
 SYMBOL_MAX_STACK_OVERRIDE = {}
 # 누적 성적 집계 시작 시각 (한국시간). 이 시각 이후 봇이 진입한 거래만 집계해요.
 # 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
-STATS_START_KST = "2026-11-19 21:26"
+STATS_START_KST = "2026-11-20 00:00"
 
 # 누적 성적에서 빼버릴 신호 (기록을 지우고 합계에서도 뺌)
 STATS_EXCLUDE_SOURCES = {"클러스터"}
@@ -685,7 +685,20 @@ def sync_transfers() -> None:
 
 
 # 지난 날짜를 OKX 거래 내역으로 다시 계산해서 기록지에 채움 (한 번만 실행)
-BACKFILL_DATES = ["2026-11-19"]
+BACKFILL_DATES: list = []   # 지난 날짜 다시 계산 안 함
+
+# 이 날짜 이전 기록지·거래 기록은 지움 (11/20부터 새로 기록)
+JOURNAL_START = "2026-11-20"
+
+
+def purge_old_journal() -> None:
+    j = _state.get("journal", {})
+    for d in [d for d in j if d < JOURNAL_START]:
+        j.pop(d, None)
+    start_ms = int(datetime.strptime(JOURNAL_START, "%Y-%m-%d").replace(tzinfo=KST).timestamp() * 1000)
+    tl = _state.get("trade_log", [])
+    _state["trade_log"] = [t for t in tl if t.get("t", 0) >= start_ms]
+    save_state(_state)
 
 
 def backfill_journal() -> None:
@@ -1948,8 +1961,8 @@ def main():
     purge_excluded_sources()
     merge_split_sources()
     sync_positions_from_exchange()
+    purge_old_journal()
     seed_journal_today()
-    threading.Thread(target=backfill_journal, daemon=True).start()
 
     log.info("상태 파일 위치: %s (%s)", STATE_FILE.resolve(),
              "Volume 사용 중 — 재배포해도 기록 유지" if os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
