@@ -661,6 +661,63 @@ def sync_transfers() -> None:
             notify("🏦 입금 기록 (OKX)", f"거래 계정으로 +{amt:.2f} USDT 들어왔어요.\n기록지 {date} 칸에 입금으로 남겼어요.")
 
 
+# 지난 날짜를 OKX 거래 내역으로 다시 계산해서 기록지에 채움 (한 번만 실행)
+BACKFILL_DATES = ["2026-11-19"]
+
+
+def backfill_journal() -> None:
+    with _state_lock:
+        done = set(_state.get("backfilled", []))
+    todo = [d for d in BACKFILL_DATES if d not in done]
+    if not todo:
+        return
+    oldest = min(todo)
+    start_ms = int(datetime.strptime(oldest, "%Y-%m-%d").replace(tzinfo=KST).timestamp() * 1000)
+    rows, after = [], None
+    try:
+        for _ in range(30):   # 최대 3,000건
+            page = _executor.get_positions_history(after)
+            if not page:
+                break
+            rows.extend(page)
+            last = min(int(r.get("uTime", 0) or 0) for r in page)
+            if last < start_ms:
+                break
+            after = last
+    except Exception as e:  # noqa: BLE001
+        log.warning("지난 기록 불러오기 실패: %s", format_okx_error(e))
+        return
+
+    agg = {d: {"win": 0, "be": 0, "loss": 0, "pnl": 0.0} for d in todo}
+    seen = set()
+    for r in rows:
+        key = (r.get("posId"), r.get("uTime"))
+        if key in seen:
+            continue
+        seen.add(key)
+        if str(r.get("type", "")) == "1":      # 부분 청산 중인 기록은 제외 (완전히 끝난 것만)
+            continue
+        if r.get("instId") in BOT_EXCLUDE_SYMBOLS:   # 수동 거래 종목 제외
+            continue
+        date = datetime.fromtimestamp(int(r.get("uTime", 0) or 0) / 1000, KST).strftime("%Y-%m-%d")
+        if date not in agg:
+            continue
+        pnl = float(r.get("pnl", 0) or 0)
+        kind = "loss" if pnl < 0 else ("be" if pnl < 1.0 else "win")
+        agg[date][kind] += 1
+        agg[date]["pnl"] += pnl
+
+    with _state_lock:
+        for d, a in agg.items():
+            day = _journal_day(d)
+            day.update(win=a["win"], be=a["be"], loss=a["loss"], pnl=round(a["pnl"], 4))
+            day["backfilled"] = True
+            log.info("기록지 %s 다시 계산: 익절 %d / 본절 %d / 손절 %d, %+.2f (BTC·ETH 제외)",
+                     d, a["win"], a["be"], a["loss"], a["pnl"])
+        _state["backfilled"] = sorted(done | set(todo))
+        save_state(_state)
+
+
 def seed_journal_today() -> None:
     """기록지가 처음 생길 때, 오늘 이미 쌓인 성적을 오늘 칸에 넣어둠."""
     if _state.get("journal"):
@@ -982,6 +1039,13 @@ class OkxExecutor:
             "usdt_balance": float(detail.get("eq", 0) or 0),
             "unrealized_pnl": float(detail.get("upl", 0) or 0),
         }
+
+    def get_positions_history(self, after_ms: Optional[int] = None) -> list:
+        params = {"instType": "SWAP", "limit": "100"}
+        if after_ms:
+            params["after"] = str(after_ms)   # 이 시각보다 이전 기록
+        data = self._request("GET", "/api/v5/account/positions-history", params=params)
+        return data.get("data", []) or []
 
     def get_transfer_bills(self) -> list:
         """거래 계정 USDT 이체 내역 (자금 계정 ↔ 거래 계정). 최근 7일, 최신순."""
@@ -1861,6 +1925,7 @@ def main():
     merge_split_sources()
     sync_positions_from_exchange()
     seed_journal_today()
+    threading.Thread(target=backfill_journal, daemon=True).start()
 
     log.info("상태 파일 위치: %s (%s)", STATE_FILE.resolve(),
              "Volume 사용 중 — 재배포해도 기록 유지" if os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
