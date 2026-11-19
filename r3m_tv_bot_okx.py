@@ -854,129 +854,236 @@ def daily_close_loop():
 def render_report_html() -> bytes:
     with _state_lock:
         journal = json.loads(json.dumps(_state.get("journal", {})))
-        trades = list(_state.get("trade_log", []))[-60:]
-    days = sorted(journal.items(), reverse=True)
-    esc = html.escape
-    with _state_lock:
+        trades = list(_state.get("trade_log", []))[-40:]
         acct = dict(_state.get("last_account") or {})
-
-    def money(v):
-        cls = "pos" if v > 0 else ("neg" if v < 0 else "")
-        return f'<span class="{cls}">{v:+.2f}</span>'
-
-    # 합계 (전체 / 이번 주 / 이번 달)
+    esc = html.escape
+    days = sorted(journal.items(), reverse=True)
     now = datetime.now(KST)
+    today = now.strftime("%Y-%m-%d")
+    WD = "월화수목금토일"
+
+    def cls(v):
+        return "pos" if v > 0 else ("neg" if v < 0 else "zero")
+
+    def fmt(v, d=2):
+        return f"{v:+,.{d}f}"
+
+    # ---------- 시작 대비
+    net_tr = sum(v.get("dep", 0.0) + v.get("wd", 0.0) for d, v in journal.items() if d >= JOURNAL_START)
+    eq = acct.get("eq")
+    gain = (eq - STARTING_BALANCE - net_tr) if (eq is not None and STARTING_BALANCE) else None
+    rate = (gain / STARTING_BALANCE * 100) if gain is not None else None
+    upd = datetime.fromtimestamp(acct["t"] / 1000, KST).strftime("%H:%M") if acct else "-"
+
+    # ---------- 잔액 흐름 그래프 (0시 잔액 + 지금)
+    pts = [(d, v["start_total"]) for d, v in sorted(journal.items()) if v.get("start_total") is not None]
+    if eq is not None:
+        pts.append(("now", eq))
+    spark = ""
+    if len(pts) >= 2:
+        vals = [p[1] for p in pts]
+        lo, hi = min(vals), max(vals)
+        rng = (hi - lo) or 1
+        W, H, P = 300, 64, 4
+        xy = [(P + i * (W - 2 * P) / (len(vals) - 1), H - P - (v - lo) / rng * (H - 2 * P)) for i, v in enumerate(vals)]
+        line = " ".join(f"{x:.1f},{y:.1f}" for x, y in xy)
+        area = f"{xy[0][0]:.1f},{H} " + line + f" {xy[-1][0]:.1f},{H}"
+        up = vals[-1] >= vals[0]
+        spark = (f'<svg class="spark {"up" if up else "down"}" viewBox="0 0 {W} {H}" preserveAspectRatio="none">'
+                 f'<polygon points="{area}" class="fill"/><polyline points="{line}" class="ln"/>'
+                 f'<circle cx="{xy[-1][0]:.1f}" cy="{xy[-1][1]:.1f}" r="3.5" class="dot"/></svg>'
+                 f'<div class="sparklab"><span>{esc(pts[0][0][5:].replace("-", "/"))}</span><span>지금</span></div>')
+
+    hero = f'''
+<section class="hero">
+  <div class="lab">총 잔액 <span class="muted">· {upd} 기준</span></div>
+  <div class="big">{eq:,.2f}<small> USDT</small></div>
+  <div class="sub">미실현 <b class="{cls(acct.get("upl", 0))}">{fmt(acct.get("upl", 0))}</b></div>
+  <div class="startrow">
+    <div><div class="lab">🚩 시작 ({esc(JOURNAL_START[5:].replace("-", "/"))})</div><div class="mid">{STARTING_BALANCE:,.0f}</div></div>
+    <div class="r"><div class="lab">시작 대비 순수익</div>
+      <div class="mid {cls(gain or 0)}">{fmt(gain) if gain is not None else "-"}</div>
+      <div class="pill {cls(rate or 0)}">{fmt(rate) + "%" if rate is not None else "-"}</div></div>
+  </div>
+  <div class="note">입출금 {net_tr:+,.0f}은 빼고 계산했어요</div>
+</section>''' if eq is not None else '<section class="hero"><div class="lab">총 잔액</div><div class="big">-</div><div class="sub">첫 정기 리포트 후에 보여요</div></section>'
+
+    # ---------- 오늘
+    td = journal.get(today, {"win": 0, "be": 0, "loss": 0, "pnl": 0.0})
+    tpct = (td["pnl"] / DAILY_TARGET_USD * 100) if DAILY_TARGET_USD else 0
+    tg = day_growth(td) if td.get("start_total") is not None else None
+    today_html = f'''
+<section class="card today">
+  <div class="row"><div class="lab">오늘 · {now.month}/{now.day}({WD[now.weekday()]})</div>
+    <div class="lab">목표 {DAILY_TARGET_USD:.0f}</div></div>
+  <div class="row end"><div class="big2 {cls(td["pnl"])}">{fmt(td["pnl"])}<small> USDT</small></div>
+    <div class="pct">{tpct:.0f}%</div></div>
+  <div class="bar"><i style="width:{max(0, min(100, tpct)):.0f}%"></i></div>
+  <div class="chips"><span class="chip w">✅ 익절 {td["win"]}회</span><span class="chip b">➖ 본절 {td["be"]}회</span><span class="chip l">🛑 손절 {td["loss"]}회</span></div>
+  {f'<div class="note">0시 잔액 {td["start_total"]:,.2f} · 하루 수익률 <b class="{cls(tg or 0)}">{fmt(tg)}%</b></div>' if tg is not None else ''}
+</section>'''
+
+    # ---------- 기간 합계
     week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
     month = now.strftime("%Y-%m")
-    def total(filter_fn):
-        t = {"n": 0, "win": 0, "be": 0, "loss": 0, "pnl": 0.0, "days": 0, "dep": 0.0, "wd": 0.0}
+
+    def total(fn):
+        t = {"win": 0, "be": 0, "loss": 0, "pnl": 0.0, "days": 0}
         for d, v in journal.items():
-            if filter_fn(d):
+            if fn(d):
                 t["days"] += 1
                 for k in ("win", "be", "loss"):
                     t[k] += v[k]
                 t["pnl"] += v["pnl"]
-                t["dep"] += v.get("dep", 0.0)
-                t["wd"] += v.get("wd", 0.0)
-        t["n"] = t["win"] + t["be"] + t["loss"]
         return t
-    cards = [("이번 주", total(lambda d: d >= week_start)),
-             ("이번 달", total(lambda d: d.startswith(month))),
-             ("전체 기록", total(lambda d: True))]
-    card_html = ""
-    if STARTING_BALANCE:
-        net_tr = sum(v.get("dep", 0.0) + v.get("wd", 0.0) for d, v in journal.items() if d >= JOURNAL_START)
-        if acct:
-            gain = acct["eq"] - STARTING_BALANCE - net_tr
-            rate = gain / STARTING_BALANCE * 100
-            gain_html = (f'{money(gain)} <small>USDT</small>'
-                         f'<div class="cs">수익률 <b>{money(rate)}%</b> · 입출금 {net_tr:+.0f} 제외</div>')
-        else:
-            gain_html = '<span class="muted">-</span>'
-        card_html += (f'<div class="card main"><div class="ct">🚩 시작 금액 ({esc(JOURNAL_START[5:].replace("-", "/"))})</div>'
-                      f'<div class="cv">{STARTING_BALANCE:,.2f} <small>USDT</small></div>'
-                      f'<div class="cs">시작 대비 순수익</div><div class="cv" style="font-size:18px">{gain_html}</div></div>')
-    if acct:
-        upd = datetime.fromtimestamp(acct["t"] / 1000, KST).strftime("%m-%d %H:%M")
-        card_html += (f'<div class="card main"><div class="ct">💰 총 잔액 (평가 기준)</div>'
-                      f'<div class="cv">{acct["eq"]:,.2f} <small>USDT</small></div>'
-                      f'<div class="cs">현금 {acct["eq"] - acct["upl"]:,.2f} · 미실현 {money(acct["upl"])}'
-                      f'<br>{upd} 기준</div></div>')
-    for title, t in cards:
+    tiles = ""
+    for title, t in (("이번 주", total(lambda d: d >= week_start)),
+                     ("이번 달", total(lambda d: d.startswith(month))),
+                     ("전체", total(lambda d: True))):
+        n = t["win"] + t["be"] + t["loss"]
         avg = t["pnl"] / t["days"] if t["days"] else 0
-        card_html += (f'<div class="card"><div class="ct">{title}</div>'
-                      f'<div class="cv">{money(t["pnl"])} <small>USDT</small></div>'
-                      f'<div class="cs">{t["days"]}일 · 거래 {t["n"]}번'
-                      f'<br>✅ 익절 {t["win"]}회<br>➖ 본절 {t["be"]}회<br>🛑 손절 {t["loss"]}회'
-                      f'<br>하루 평균 {avg:+.2f}'
-                      + '</div></div>')
+        wr = (t["win"] + t["be"]) / n * 100 if n else 0
+        tiles += (f'<div class="tile"><div class="lab">{title}</div>'
+                  f'<div class="mid {cls(t["pnl"])}">{fmt(t["pnl"], 1)}</div>'
+                  f'<div class="tiny">{t["days"]}일 · {n}번<br>하루 {fmt(avg, 1)}<br>승률 {wr:.0f}%</div></div>')
 
-    rows = ""
+    # ---------- 일별 (표)
+    drows = ""
+    mrows = ""
     for d, v in days:
+        dt = datetime.strptime(d, "%Y-%m-%d")
         n = v["win"] + v["be"] + v["loss"]
         pct = (v["pnl"] / DAILY_TARGET_USD * 100) if DAILY_TARGET_USD else 0
-        bar = max(0, min(100, pct))
-        if v.get("start_total") is not None:
-            g = day_growth(v)
-            eq = (f'<b>{v["start_total"]:,.2f}</b>'
-                  + (f'<br><span class="small">하루 {money(g)}%</span>' if g is not None else ''))
-        else:
-            eq = '<span class="muted">-</span>'
+        g = day_growth(v) if v.get("start_total") is not None else None
+        bal = (f'<b>{v["start_total"]:,.2f}</b>'
+               + (f'<br><span class="tiny">하루 <b class="{cls(g)}">{fmt(g)}%</b></span>' if g is not None else '')
+               if v.get("start_total") is not None else '<span class="muted">-</span>')
         tr = []
         if v.get("dep"):
-            tr.append(f'<span class="pos">입금 +{v["dep"]:.0f}</span>')
+            tr.append(f'<span class="pos">입금 +{v["dep"]:,.0f}</span>')
         if v.get("wd"):
-            tr.append(f'<span class="neg">출금 {v["wd"]:.0f}</span>')
+            tr.append(f'<span class="neg">출금 {v["wd"]:,.0f}</span>')
         if v.get("dep") and v.get("wd"):
-            net_tr = v["dep"] + v["wd"]
-            tr.append(f'<b>합계 {money(net_tr)}</b>')
-        tr_html = "<br>".join(tr) or '<span class="muted">-</span>'
-        srcs = " · ".join(f'{esc(k)} {x["pnl"]:+.1f}' for k, x in v["by_source"].items())
-        rows += (f'<tr><td>{esc(d[5:])}</td><td>{n}</td><td>✅ 익절 {v["win"]}회<br>➖ 본절 {v["be"]}회<br>🛑 손절 {v["loss"]}회</td>'
-                 f'<td>{money(v["pnl"])}</td>'
-                 f'<td><div class="bar"><i style="width:{bar:.0f}%"></i></div>{pct:.0f}%</td>'
-                 f'<td>{eq}</td><td class="small">{tr_html}</td><td class="muted small">{srcs}</td></tr>')
-    if not rows:
-        rows = '<tr><td colspan="8" class="muted">아직 기록이 없어요</td></tr>'
+            tr.append(f'<b>합계 <span class="{cls(v["dep"] + v["wd"])}">{v["dep"] + v["wd"]:+,.0f}</span></b>')
+        trh = "<br>".join(tr) or '<span class="muted">-</span>'
+        srcs = "<br>".join(f'{esc(k)} <b class="{cls(x["pnl"])}">{fmt(x["pnl"], 1)}</b>'
+                           for k, x in v["by_source"].items()) or '<span class="muted">-</span>'
+        extra = []
+        if tr:
+            extra.append(" · ".join(tr))
+        if v["by_source"]:
+            extra.append(" · ".join(f'{esc(k)} <b class="{cls(x["pnl"])}">{fmt(x["pnl"], 1)}</b>'
+                                    for k, x in v["by_source"].items()))
+        mrows += (f'<tr class="mtop"><td class="dt">{dt.month}/{dt.day}<br><span class="tiny">({WD[dt.weekday()]}) · {n}번</span></td>'
+                  f'<td class="res3">✅ 익절 {v["win"]}회<br>➖ 본절 {v["be"]}회<br>🛑 손절 {v["loss"]}회</td>'
+                  f'<td class="r"><span class="num {cls(v["pnl"])}">{fmt(v["pnl"])}</span>'
+                  f'<div class="bar sm r"><i style="width:{max(0, min(100, pct)):.0f}%"></i></div>'
+                  f'<span class="tiny">목표 {pct:.0f}%</span></td>'
+                  f'<td class="r">{bal}</td></tr>'
+                  + (f'<tr class="msub"><td colspan="4">{"<br>".join(extra)}</td></tr>' if extra else ''))
+        drows += (f'<tr><td class="dt">{dt.month}/{dt.day}<br><span class="tiny">({WD[dt.weekday()]})</span></td>'
+                  f'<td>{n}</td>'
+                  f'<td class="res3">✅ 익절 {v["win"]}회<br>➖ 본절 {v["be"]}회<br>🛑 손절 {v["loss"]}회</td>'
+                  f'<td class="num {cls(v["pnl"])}">{fmt(v["pnl"])}</td>'
+                  f'<td><div class="bar sm"><i style="width:{max(0, min(100, pct)):.0f}%"></i></div>'
+                  f'<span class="tiny">{pct:.0f}%</span></td>'
+                  f'<td>{bal}</td><td class="small">{trh}</td><td class="small">{srcs}</td></tr>')
+    if not drows:
+        drows = '<tr><td colspan="8" class="empty">아직 기록이 없어요</td></tr>'
+        mrows = '<tr><td colspan="4" class="empty">아직 기록이 없어요</td></tr>'
+    dcards = (f'<div class="tblwrap"><table class="dtbl"><thead><tr><th>날짜</th><th>거래</th><th>결과</th>'
+              f'<th>실현손익</th><th>목표 달성</th><th>0시 잔액</th><th>입출금</th><th>신호별</th></tr></thead>'
+              f'<tbody>{drows}</tbody></table></div>'
+              f'<div class="mwrap"><table class="mtbl"><thead><tr><th>날짜</th><th>결과</th>'
+              f'<th class="r">실현손익</th><th class="r">0시 잔액</th></tr></thead><tbody>{mrows}</tbody></table></div>')
 
-    trows = ""
+    # ---------- 최근 거래
+    tl = ""
     for t in reversed(trades):
-        ts = datetime.fromtimestamp(t["t"] / 1000, KST).strftime("%m-%d %H:%M")
-        kind = {"win": "✅ 익절", "be": "➖ 본절", "loss": "🛑 손절"}.get(t["kind"], "")
+        ts = datetime.fromtimestamp(t["t"] / 1000, KST)
+        kind = {"win": ("✅", "익절"), "be": ("➖", "본절"), "loss": ("🛑", "손절")}.get(t["kind"], ("", ""))
         side = {"L": "롱", "S": "숏"}.get(t.get("side"), "")
-        trows += (f'<tr><td>{ts}</td><td>{esc(t["inst"].replace("-USDT-SWAP", ""))}</td>'
-                  f'<td>{esc(t["src"] or "")} {side}</td><td>{kind}</td><td>{money(t["pnl"])}</td></tr>')
-    if not trows:
-        trows = '<tr><td colspan="5" class="muted">아직 거래가 없어요</td></tr>'
+        tl += (f'<div class="tr"><div class="ic">{kind[0]}</div>'
+               f'<div class="tm"><div class="sym">{esc(t["inst"].replace("-USDT-SWAP", ""))} <span class="sd {"l" if side == "롱" else "s"}">{side}</span></div>'
+               f'<div class="tiny">{esc(t["src"] or "")} · {ts.month}/{ts.day} {ts:%H:%M}</div></div>'
+               f'<div class="tp {cls(t["pnl"])}">{fmt(t["pnl"])}<div class="tiny r">{kind[1]}</div></div></div>')
+    if not tl:
+        tl = '<div class="empty">아직 거래가 없어요</div>'
 
     page = f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="60"><title>매매 기록지</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f3f4f7"><meta http-equiv="refresh" content="60">
+<meta name="apple-mobile-web-app-capable" content="yes"><title>매매 기록지</title>
 <style>
-:root{{--bg:#f6f7f9;--fg:#15171a;--card:#fff;--muted:#6b7280;--line:#e5e7eb;--pos:#0f9d58;--neg:#d93025;--acc:#3b6cff}}
-@media (prefers-color-scheme:dark){{:root{{--bg:#0f1115;--fg:#e8eaed;--card:#181b21;--muted:#9aa0a6;--line:#2a2e36;--pos:#34c77b;--neg:#ff6b6b;--acc:#7b9bff}}}}
-body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}}
-.wrap{{max-width:900px;margin:0 auto;padding:16px}}
-h1{{font-size:20px;margin:4px 0 2px}} .sub{{color:var(--muted);font-size:12px;margin-bottom:14px}}
-.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-bottom:18px}}
-.card{{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}}
-.ct{{color:var(--muted);font-size:12px}} .card.main{{border-color:var(--acc)}} .cv{{font-size:22px;font-weight:700;margin:2px 0}} .cs{{color:var(--muted);font-size:12px}}
-h2{{font-size:15px;margin:18px 0 8px}}
-.tbl{{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow-x:auto}}
-table{{width:100%;border-collapse:collapse;white-space:nowrap}}
-th,td{{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left}} th{{color:var(--muted);font-weight:600;font-size:12px}}
-tr:last-child td{{border-bottom:0}} .pos{{color:var(--pos);font-weight:600}} .neg{{color:var(--neg);font-weight:600}}
-.muted{{color:var(--muted)}} .small{{font-size:12px}}
-.bar{{display:inline-block;width:60px;height:6px;background:var(--line);border-radius:3px;margin-right:6px;vertical-align:middle;overflow:hidden}}
-.bar i{{display:block;height:100%;background:var(--acc)}}
+:root{{--bg:#f3f4f7;--fg:#14161b;--card:#fff;--muted:#7a808c;--line:#e7e9ee;--pos:#0e9f5a;--neg:#e0443a;--zero:#7a808c;
+--acc:#4b6bff;--acc2:#8a5cff;--chip:#f1f3f7;--hero1:#1b2140;--hero2:#2d2a5e}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;-webkit-font-smoothing:antialiased}}
+.wrap{{max-width:720px;margin:0 auto;padding:14px 14px calc(28px + env(safe-area-inset-bottom))}}
+header{{display:flex;justify-content:space-between;align-items:center;margin:4px 2px 12px}}
+h1{{font-size:19px;margin:0;letter-spacing:-.3px}} .muted{{color:var(--muted)}} .tiny{{font-size:11.5px;color:var(--muted);line-height:1.5}}
+.pos{{color:var(--pos)}} .neg{{color:var(--neg)}} .zero{{color:var(--zero)}} .r{{text-align:right}}
+.lab{{font-size:12px;color:var(--muted)}} .small{{font-size:12.5px}}
+.card{{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px 16px;margin-bottom:12px}}
+.hero{{border-radius:22px;padding:18px 18px 14px;margin-bottom:12px;color:#fff;
+background:radial-gradient(120% 140% at 100% 0%,var(--hero2),var(--hero1));box-shadow:0 10px 30px rgba(40,40,90,.25)}}
+.hero .lab,.hero .muted,.hero .note,.hero .sub{{color:rgba(255,255,255,.72)}}
+.hero .pos{{color:#5cf0a8}} .hero .neg{{color:#ff8f86}}
+.big{{font-size:34px;font-weight:800;letter-spacing:-.8px;margin:2px 0}} .big small,.big2 small{{font-size:14px;font-weight:600;opacity:.7}}
+.big2{{font-size:28px;font-weight:800;letter-spacing:-.6px}} .big3{{font-size:20px;font-weight:800;letter-spacing:-.4px}}
+.mid{{font-size:19px;font-weight:750;letter-spacing:-.3px}}
+.sub{{font-size:13px}} .note{{font-size:11.5px;color:var(--muted);margin-top:8px}}
+.spark{{width:100%;height:64px;margin:10px 0 0;display:block}} .spark .ln{{fill:none;stroke-width:2.2;stroke-linejoin:round;stroke-linecap:round}}
+.spark.up .ln{{stroke:#5cf0a8}} .spark.down .ln{{stroke:#ff8f86}} .spark .fill{{opacity:.18}} .spark.up .fill{{fill:#5cf0a8}} .spark.down .fill{{fill:#ff8f86}}
+.spark .dot{{fill:#fff}} .sparklab{{display:flex;justify-content:space-between;font-size:10.5px;color:rgba(255,255,255,.55);margin-top:2px}}
+.startrow{{display:flex;justify-content:space-between;align-items:flex-end;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.14)}}
+.startrow .r{{text-align:right}} .pill{{display:inline-block;margin-top:4px;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,.12)}}
+.row{{display:flex;justify-content:space-between;align-items:center;gap:8px}} .row.end{{align-items:flex-end}}
+.pct{{font-size:15px;font-weight:700;color:var(--acc)}}
+.bar{{height:9px;background:var(--chip);border-radius:6px;overflow:hidden;margin:10px 0}} .bar.sm{{height:6px;margin:8px 0 6px}}
+.bar i{{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,var(--acc),var(--acc2))}}
+.chips{{display:flex;gap:6px;flex-wrap:wrap}} .chip{{background:var(--chip);border-radius:999px;padding:5px 10px;font-size:12.5px;font-weight:600}}
+.tiles{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:18px}}
+.tile{{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:11px 12px}} .tile .mid{{font-size:17px;margin:2px 0 4px}}
+h2{{font-size:15px;margin:20px 4px 10px;letter-spacing:-.2px}}
+.day .date{{font-weight:750;font-size:15px}}
+.res{{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}}
+.res div{{background:var(--chip);border-radius:10px;padding:7px 6px;text-align:center;font-size:12.5px;font-weight:600}}
+.tags{{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}} .tag{{font-size:12px;font-weight:700;padding:3px 9px;border-radius:8px;background:var(--chip)}}
+.srcs{{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted)}}
+.tblwrap{{background:var(--card);border:1px solid var(--line);border-radius:18px;overflow-x:auto;-webkit-overflow-scrolling:touch}}
+.dtbl{{border-collapse:collapse;white-space:nowrap;width:100%;font-size:13.5px}}
+.dtbl th{{position:sticky;top:0;background:var(--card);color:var(--muted);font-size:11.5px;font-weight:600;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)}}
+.dtbl td{{padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:middle}} .dtbl tr:last-child td{{border-bottom:0}}
+.dtbl th:first-child,.dtbl td:first-child{{position:sticky;left:0;background:var(--card);z-index:1}}
+.dtbl .dt{{font-weight:750}} .dtbl .num{{font-weight:800;font-size:15px}} .dtbl .res3{{line-height:1.7;font-size:12.5px}}
+.dtbl .bar.sm{{width:70px;margin:0 0 3px}}
+.mwrap{{display:none;background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden}}
+.mtbl{{border-collapse:collapse;width:100%;font-size:12.5px}}
+.mtbl th{{color:var(--muted);font-size:11px;font-weight:600;text-align:left;padding:9px 10px;border-bottom:1px solid var(--line)}}
+.mtbl td{{padding:10px 10px;vertical-align:middle}} .mtbl .r,.mtbl th.r{{text-align:right}}
+.mtbl tr.mtop td{{border-top:1px solid var(--line)}} .mtbl tbody tr.mtop:first-child td{{border-top:0}}
+.mtbl tr.msub td{{padding:0 10px 10px;font-size:11.5px;color:var(--muted);line-height:1.6}}
+.mtbl .dt{{font-weight:750;font-size:13.5px}} .mtbl .num{{font-weight:800;font-size:14.5px}} .mtbl .res3{{line-height:1.65;font-size:12px}}
+.mtbl .bar.sm{{width:64px;margin:5px 0 2px auto}}
+@media (max-width:600px){{.tblwrap{{display:none}} .mwrap{{display:block}}}}
+.list{{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:4px 14px}}
+.tr{{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)}} .tr:last-child{{border-bottom:0}}
+.ic{{width:34px;height:34px;border-radius:10px;background:var(--chip);display:flex;align-items:center;justify-content:center;font-size:15px;flex:none}}
+.tm{{flex:1;min-width:0}} .sym{{font-weight:700}} .sd{{font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;margin-left:4px}}
+.sd.l{{color:var(--pos);background:color-mix(in srgb,var(--pos) 14%,transparent)}} .sd.s{{color:var(--neg);background:color-mix(in srgb,var(--neg) 14%,transparent)}}
+.tp{{font-weight:800;text-align:right}} .empty{{color:var(--muted);text-align:center;padding:18px}}
+footer{{text-align:center;font-size:11px;color:var(--muted);margin-top:18px}}
 </style></head><body><div class="wrap">
-<h1>📒 매매 기록지</h1>
-<div class="sub">봇 거래만 기록 (수동 거래 제외) · 하루 기준 한국시간 0시 · 목표 하루 {DAILY_TARGET_USD:.0f} USDT · 1분마다 새로고침</div>
-<div class="cards">{card_html}</div>
+<header><h1>📒 매매 기록지</h1><span class="tiny">1분마다 새로고침</span></header>
+{hero}
+{today_html}
+<div class="tiles">{tiles}</div>
 <h2>일별 기록</h2>
-<div class="tbl"><table><tr><th>날짜</th><th>거래</th><th>결과</th><th>실현손익</th><th>목표 달성</th><th>0시 잔액</th><th>입출금</th><th>신호별</th></tr>{rows}</table></div>
+{dcards}
 <h2>최근 거래</h2>
-<div class="tbl"><table><tr><th>시간</th><th>종목</th><th>신호</th><th>결과</th><th>손익</th></tr>{trows}</table></div>
+<div class="list">{tl}</div>
+<footer>봇 거래만 기록 · 수동 거래 제외 · 하루 기준 한국시간 0시</footer>
 </div></body></html>"""
     return page.encode("utf-8")
 
