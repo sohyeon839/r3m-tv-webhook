@@ -59,6 +59,9 @@ LEVERAGE = 3             # 기본 레버리지 (신호별로 아래 규칙에서
 
 # 방향별 배율 (모든 신호 공통으로 우선 적용). None이면 신호별 설정을 따름.
 # 익절·손절은 "가격 기준 거리"가 같게 자동으로 맞춰져요.
+# 봇이 절대 안 들어가는 종목 (직접 거래하는 종목). 예: {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
+BOT_EXCLUDE_SYMBOLS: set = {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
+
 LONG_ENTRY_ENABLED = True   # 롱 진입 켬 (끄려면 False)
 LONG_LEVERAGE = 3        # 롱 3배 (증거금 200 → 포지션 600)
 SHORT_LEVERAGE = 3       # 숏 3배 (증거금 200 → 포지션 600)
@@ -74,7 +77,7 @@ MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추�
 SYMBOL_MAX_STACK_OVERRIDE = {}
 # 누적 성적 집계 시작 시각 (한국시간). 이 시각 이후 봇이 진입한 거래만 집계해요.
 # 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
-STATS_START_KST = "2026-11-18 20:30"
+STATS_START_KST = "2026-11-19 21:26"
 
 # 누적 성적에서 빼버릴 신호 (기록을 지우고 합계에서도 뺌)
 STATS_EXCLUDE_SOURCES = {"클러스터"}
@@ -709,6 +712,10 @@ class OkxExecutor:
             "unrealized_pnl": float(detail.get("upl", 0) or 0),
         }
 
+    def get_position_size(self, inst_id: str) -> float:
+        data = self._request("GET", "/api/v5/account/positions", params={"instId": inst_id})
+        return sum(abs(float(p.get("pos", 0) or 0)) for p in data.get("data", []))
+
     def get_open_positions(self) -> list:
         data = self._request("GET", "/api/v5/account/positions")
         return [p for p in data.get("data", []) if float(p.get("pos", 0)) != 0]
@@ -801,7 +808,7 @@ def sync_positions_from_exchange() -> None:
                 "partial_done": prev.get("partial_done", False),
                 "step_done": prev.get("step_done", False),
                 # 봇이 진입한 기록(tp_px)이 없으면 수동 포지션으로 보고 성적·손절 횟수에서 제외
-                "manual": not prev.get("tp_px"),
+                "manual": (not prev.get("tp_px")) or inst_id in BOT_EXCLUDE_SYMBOLS,
             }]
         _state["positions"] = new_positions
         save_state(_state)
@@ -824,6 +831,26 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
     if side == "L" and not LONG_ENTRY_ENABLED:
         log.info("롱 진입 꺼짐 — %s %s 롱 신호 무시", source, inst_id)
         return
+    if inst_id in BOT_EXCLUDE_SYMBOLS:
+        log.info("%s 은 수동 전용 종목이라 봇 진입 안 함", inst_id)
+        return
+
+    # OKX에 이미 이 종목 포지션이 있으면(직접 들어간 수동 포지션 등) 봇은 들어가지 않음
+    # → 같은 종목은 OKX에서 하나로 합쳐져서, 봇 손절·익절이 수동 물량까지 정리해버리기 때문
+    try:
+        live_sz = _executor.get_position_size(inst_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("%s 포지션 확인 실패 — 안전하게 진입 안 함: %s", inst_id, format_okx_error(e))
+        return
+    if live_sz > 0:
+        with _state_lock:
+            ents = _state.get("positions", {}).get(inst_id) or []
+            if not any(x.get("tp_px") for x in ents):
+                _state.setdefault("positions", {})[inst_id] = [{
+                    "side": None, "qty": live_sz, "manual": True}]
+                save_state(_state)
+                log.info("%s 에 직접 들어간 포지션이 있어서 봇 진입 안 함", inst_id)
+                return
 
     with _state_lock:
         if check_daily_sl_limit():
@@ -1308,7 +1335,9 @@ def heartbeat_loop():
                 stopped_flag = check_daily_sl_limit()
             stopped = "\n⛔ 오늘 손실 한도 도달 — 신규 진입 중지 중" if stopped_flag else ""
             if loss_limit is not None:
-                stopped = f"\n🧯 오늘 손실 한도: {loss_now:+.2f} / -{loss_limit:.2f} USDT" + stopped
+                room = loss_now + loss_limit
+                stopped = (f"\n🧯 오늘 멈춤 기준: 손익 -{loss_limit:.2f} USDT 되면 중지"
+                           f"\n    (지금 {loss_now:+.2f} → 앞으로 {max(room, 0):.2f} 더 잃으면 멈춤)") + stopped
 
             notify("📊 정기 리포트 (OKX)",
                    f"━━━━━━━━━━\n💰 USDT 잔고: {summary['usdt_balance']:.2f}\n"
@@ -1340,7 +1369,7 @@ def manage_positions_loop():
                     if not entries or inst_id not in live:
                         continue
                     e = entries[0]
-                    if not e.get("tp_px") or (e.get("be_done") and e.get("partial_done") and e.get("step_done")):
+                    if e.get("manual") or not e.get("tp_px") or (e.get("be_done") and e.get("partial_done") and e.get("step_done")):
                         continue   # 봇이 진입한 게 아니거나(수동) 이미 다 처리함
                     targets.append((inst_id, e))
 
