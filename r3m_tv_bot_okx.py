@@ -698,6 +698,9 @@ def format_day_summary(date: str) -> str:
         net = day["end_eq"] - day["start_eq"] - dep - wd
         lines.append(f"💼 잔고(현금): {day['start_eq']:.2f} → {day['end_eq']:.2f}"
                      f" (입출금 빼면 {net:+.2f})")
+    acct = _state.get("last_account")
+    if acct:
+        lines.append(f"💰 총 잔액: {acct['eq']:.2f} USDT (미실현 {acct['upl']:+.2f})")
     for name, src in day["by_source"].items():
         lines.append(f"  · {name}: ✅{src['win']} ➖{src['be']} 🛑{src['loss']}, {src['pnl']:+.2f}")
     lines.append(f"📒 기록지: {report_url()}")
@@ -732,6 +735,8 @@ def render_report_html() -> bytes:
         trades = list(_state.get("trade_log", []))[-60:]
     days = sorted(journal.items(), reverse=True)
     esc = html.escape
+    with _state_lock:
+        acct = dict(_state.get("last_account") or {})
 
     def money(v):
         cls = "pos" if v > 0 else ("neg" if v < 0 else "")
@@ -757,6 +762,12 @@ def render_report_html() -> bytes:
              ("이번 달", total(lambda d: d.startswith(month))),
              ("전체 기록", total(lambda d: True))]
     card_html = ""
+    if acct:
+        upd = datetime.fromtimestamp(acct["t"] / 1000, KST).strftime("%m-%d %H:%M")
+        card_html += (f'<div class="card main"><div class="ct">💰 총 잔액 (평가 기준)</div>'
+                      f'<div class="cv">{acct["eq"]:,.2f} <small>USDT</small></div>'
+                      f'<div class="cs">현금 {acct["eq"] - acct["upl"]:,.2f} · 미실현 {money(acct["upl"])}'
+                      f'<br>{upd} 기준</div></div>')
     for title, t in cards:
         avg = t["pnl"] / t["days"] if t["days"] else 0
         card_html += (f'<div class="card"><div class="ct">{title}</div>'
@@ -808,7 +819,7 @@ body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,
 h1{{font-size:20px;margin:4px 0 2px}} .sub{{color:var(--muted);font-size:12px;margin-bottom:14px}}
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:18px}}
 .card{{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}}
-.ct{{color:var(--muted);font-size:12px}} .cv{{font-size:22px;font-weight:700;margin:2px 0}} .cs{{color:var(--muted);font-size:12px}}
+.ct{{color:var(--muted);font-size:12px}} .card.main{{border-color:var(--acc)}} .cv{{font-size:22px;font-weight:700;margin:2px 0}} .cs{{color:var(--muted);font-size:12px}}
 h2{{font-size:15px;margin:18px 0 8px}}
 .tbl{{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow-x:auto}}
 table{{width:100%;border-collapse:collapse;white-space:nowrap}}
@@ -1573,6 +1584,8 @@ def heartbeat_loop():
             with _state_lock:
                 ensure_daily_base(summary["usdt_balance"] - upl)
                 journal_set_equity(summary["usdt_balance"] - upl)
+                _state["last_account"] = {"eq": round(summary["usdt_balance"], 2), "upl": round(upl, 2),
+                                          "t": int(time.time() * 1000)}
             open_positions = _executor.get_open_positions()
             if open_positions:
                 lines = []
