@@ -635,12 +635,27 @@ def journal_record(inst_id: str, source: str, side: Optional[str], pnl: float,
     return kind
 
 
-def journal_set_equity(cash: float) -> None:
-    day = _journal_day(_today())
+def journal_set_equity(cash: float, total: Optional[float] = None) -> None:
+    today = _today()
+    day = _journal_day(today)
     if day.get("start_eq") is None:
         day["start_eq"] = round(cash, 2)
     day["end_eq"] = round(cash, 2)
+    if total is not None:
+        if day.get("start_total") is None:
+            # 기록 첫날은 정해둔 시작 금액, 그 뒤로는 0시 직후 잔액
+            day["start_total"] = (STARTING_BALANCE if (today == JOURNAL_START and STARTING_BALANCE)
+                                  else round(total, 2))
+        day["end_total"] = round(total, 2)
     save_state(_state)
+
+
+def day_growth(day: dict) -> Optional[float]:
+    """그날 수익률(%) = (마감 잔액 - 0시 잔액 - 입출금) / 0시 잔액"""
+    st, en = day.get("start_total"), day.get("end_total")
+    if not st or en is None:
+        return None
+    return (en - st - day.get("dep", 0.0) - day.get("wd", 0.0)) / st * 100
 
 
 def sync_transfers() -> None:
@@ -689,6 +704,7 @@ BACKFILL_DATES: list = []   # 지난 날짜 다시 계산 안 함
 
 # 이 날짜 이전 기록지·거래 기록은 지움 (11/20부터 새로 기록)
 JOURNAL_START = "2026-11-20"
+STARTING_BALANCE = 1330.0   # 기록 시작할 때 잔고 (기록지 맨 위에 표시)
 
 
 def purge_old_journal() -> None:
@@ -790,10 +806,10 @@ def format_day_summary(date: str) -> str:
     dep, wd = day.get("dep", 0.0), day.get("wd", 0.0)
     if dep or wd:
         lines.append(f"🏦 입출금: 입금 +{dep:.2f} / 출금 {wd:.2f} → 합계 {dep + wd:+.2f}")
-    if day.get("start_eq") is not None and day.get("end_eq") is not None:
-        net = day["end_eq"] - day["start_eq"] - dep - wd
-        lines.append(f"💼 잔고(현금): {day['start_eq']:.2f} → {day['end_eq']:.2f}"
-                     f" (입출금 빼면 {net:+.2f})")
+    if day.get("start_total") is not None and day.get("end_total") is not None:
+        g = day_growth(day)
+        lines.append(f"🌅 0시 잔액 {day['start_total']:.2f} → 마감 {day['end_total']:.2f}"
+                     + (f" (하루 수익률 {g:+.2f}%)" if g is not None else ""))
     acct = _state.get("last_account")
     if acct:
         lines.append(f"💰 총 잔액: {acct['eq']:.2f} USDT (미실현 {acct['upl']:+.2f})")
@@ -815,6 +831,16 @@ def daily_close_loop():
                     save_state(_state)
                     last = today
             if last != today:
+                try:
+                    acc = _executor.get_account_summary()
+                    with _state_lock:
+                        prev = _journal_day(last)
+                        prev["end_total"] = round(acc["usdt_balance"], 2)
+                        newd = _journal_day(today)
+                        newd["start_total"] = round(acc["usdt_balance"], 2)
+                        save_state(_state)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("0시 잔액 기록 실패: %s", e)
                 with _state_lock:
                     text = format_day_summary(last)
                     _state["journal_last_day"] = today
@@ -858,6 +884,18 @@ def render_report_html() -> bytes:
              ("이번 달", total(lambda d: d.startswith(month))),
              ("전체 기록", total(lambda d: True))]
     card_html = ""
+    if STARTING_BALANCE:
+        net_tr = sum(v.get("dep", 0.0) + v.get("wd", 0.0) for d, v in journal.items() if d >= JOURNAL_START)
+        if acct:
+            gain = acct["eq"] - STARTING_BALANCE - net_tr
+            rate = gain / STARTING_BALANCE * 100
+            gain_html = (f'{money(gain)} <small>USDT</small>'
+                         f'<div class="cs">수익률 <b>{money(rate)}%</b> · 입출금 {net_tr:+.0f} 제외</div>')
+        else:
+            gain_html = '<span class="muted">-</span>'
+        card_html += (f'<div class="card main"><div class="ct">🚩 시작 금액 ({esc(JOURNAL_START[5:].replace("-", "/"))})</div>'
+                      f'<div class="cv">{STARTING_BALANCE:,.2f} <small>USDT</small></div>'
+                      f'<div class="cs">시작 대비 순수익</div><div class="cv" style="font-size:18px">{gain_html}</div></div>')
     if acct:
         upd = datetime.fromtimestamp(acct["t"] / 1000, KST).strftime("%m-%d %H:%M")
         card_html += (f'<div class="card main"><div class="ct">💰 총 잔액 (평가 기준)</div>'
@@ -878,8 +916,12 @@ def render_report_html() -> bytes:
         n = v["win"] + v["be"] + v["loss"]
         pct = (v["pnl"] / DAILY_TARGET_USD * 100) if DAILY_TARGET_USD else 0
         bar = max(0, min(100, pct))
-        eq = (f'{v["start_eq"]:.0f} → {v["end_eq"]:.0f}'
-              if v.get("start_eq") is not None and v.get("end_eq") is not None else "-")
+        if v.get("start_total") is not None:
+            g = day_growth(v)
+            eq = (f'<b>{v["start_total"]:,.2f}</b>'
+                  + (f'<br><span class="small">하루 {money(g)}%</span>' if g is not None else ''))
+        else:
+            eq = '<span class="muted">-</span>'
         tr = []
         if v.get("dep"):
             tr.append(f'<span class="pos">입금 +{v["dep"]:.0f}</span>')
@@ -893,7 +935,7 @@ def render_report_html() -> bytes:
         rows += (f'<tr><td>{esc(d[5:])}</td><td>{n}</td><td>✅ 익절 {v["win"]}회<br>➖ 본절 {v["be"]}회<br>🛑 손절 {v["loss"]}회</td>'
                  f'<td>{money(v["pnl"])}</td>'
                  f'<td><div class="bar"><i style="width:{bar:.0f}%"></i></div>{pct:.0f}%</td>'
-                 f'<td class="muted">{eq}</td><td class="small">{tr_html}</td><td class="muted small">{srcs}</td></tr>')
+                 f'<td>{eq}</td><td class="small">{tr_html}</td><td class="muted small">{srcs}</td></tr>')
     if not rows:
         rows = '<tr><td colspan="8" class="muted">아직 기록이 없어요</td></tr>'
 
@@ -916,7 +958,7 @@ def render_report_html() -> bytes:
 body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}}
 .wrap{{max-width:900px;margin:0 auto;padding:16px}}
 h1{{font-size:20px;margin:4px 0 2px}} .sub{{color:var(--muted);font-size:12px;margin-bottom:14px}}
-.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:18px}}
+.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-bottom:18px}}
 .card{{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}}
 .ct{{color:var(--muted);font-size:12px}} .card.main{{border-color:var(--acc)}} .cv{{font-size:22px;font-weight:700;margin:2px 0}} .cs{{color:var(--muted);font-size:12px}}
 h2{{font-size:15px;margin:18px 0 8px}}
@@ -932,7 +974,7 @@ tr:last-child td{{border-bottom:0}} .pos{{color:var(--pos);font-weight:600}} .ne
 <div class="sub">봇 거래만 기록 (수동 거래 제외) · 하루 기준 한국시간 0시 · 목표 하루 {DAILY_TARGET_USD:.0f} USDT · 1분마다 새로고침</div>
 <div class="cards">{card_html}</div>
 <h2>일별 기록</h2>
-<div class="tbl"><table><tr><th>날짜</th><th>거래</th><th>결과</th><th>실현손익</th><th>목표 달성</th><th>잔고(현금)</th><th>입출금</th><th>신호별</th></tr>{rows}</table></div>
+<div class="tbl"><table><tr><th>날짜</th><th>거래</th><th>결과</th><th>실현손익</th><th>목표 달성</th><th>0시 잔액</th><th>입출금</th><th>신호별</th></tr>{rows}</table></div>
 <h2>최근 거래</h2>
 <div class="tbl"><table><tr><th>시간</th><th>종목</th><th>신호</th><th>결과</th><th>손익</th></tr>{trows}</table></div>
 </div></body></html>"""
@@ -1689,7 +1731,7 @@ def heartbeat_loop():
             upl = summary["unrealized_pnl"]
             with _state_lock:
                 ensure_daily_base(summary["usdt_balance"] - upl)
-                journal_set_equity(summary["usdt_balance"] - upl)
+                journal_set_equity(summary["usdt_balance"] - upl, summary["usdt_balance"])
                 _state["last_account"] = {"eq": round(summary["usdt_balance"], 2), "upl": round(upl, 2),
                                           "t": int(time.time() * 1000)}
             open_positions = _executor.get_open_positions()
