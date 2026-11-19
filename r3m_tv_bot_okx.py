@@ -687,7 +687,10 @@ def format_day_summary(date: str) -> str:
     pct = (day["pnl"] / DAILY_TARGET_USD * 100) if DAILY_TARGET_USD else 0
     lines = [
         f"🗓 {date} 하루 정산",
-        f"🔢 거래 {n}번 · ✅ {day['win']} / ➖ {day['be']} / 🛑 {day['loss']}",
+        f"🔢 거래 {n}번",
+        f"✅ 익절 {day['win']}회",
+        f"➖ 본절 {day['be']}회",
+        f"🛑 손절 {day['loss']}회",
         f"💵 실현손익: {day['pnl']:+.2f} USDT",
         f"🎯 목표 {DAILY_TARGET_USD:.0f} 대비 {pct:.0f}%",
     ]
@@ -702,7 +705,7 @@ def format_day_summary(date: str) -> str:
     if acct:
         lines.append(f"💰 총 잔액: {acct['eq']:.2f} USDT (미실현 {acct['upl']:+.2f})")
     for name, src in day["by_source"].items():
-        lines.append(f"  · {name}: ✅{src['win']} ➖{src['be']} 🛑{src['loss']}, {src['pnl']:+.2f}")
+        lines.append(f"  · {name}: 익절 {src['win']}회 · 본절 {src['be']}회 · 손절 {src['loss']}회, {src['pnl']:+.2f}")
     lines.append(f"📒 기록지: {report_url()}")
     return "\n".join(lines)
 
@@ -772,7 +775,8 @@ def render_report_html() -> bytes:
         avg = t["pnl"] / t["days"] if t["days"] else 0
         card_html += (f'<div class="card"><div class="ct">{title}</div>'
                       f'<div class="cv">{money(t["pnl"])} <small>USDT</small></div>'
-                      f'<div class="cs">{t["days"]}일 · {t["n"]}번 · ✅{t["win"]} ➖{t["be"]} 🛑{t["loss"]}'
+                      f'<div class="cs">{t["days"]}일 · 거래 {t["n"]}번'
+                      f'<br>✅ 익절 {t["win"]}회<br>➖ 본절 {t["be"]}회<br>🛑 손절 {t["loss"]}회'
                       f'<br>하루 평균 {avg:+.2f}'
                       + '</div></div>')
 
@@ -793,7 +797,7 @@ def render_report_html() -> bytes:
             tr.append(f'<b>합계 {money(net_tr)}</b>')
         tr_html = "<br>".join(tr) or '<span class="muted">-</span>'
         srcs = " · ".join(f'{esc(k)} {x["pnl"]:+.1f}' for k, x in v["by_source"].items())
-        rows += (f'<tr><td>{esc(d[5:])}</td><td>{n}</td><td>✅{v["win"]} ➖{v["be"]} 🛑{v["loss"]}</td>'
+        rows += (f'<tr><td>{esc(d[5:])}</td><td>{n}</td><td>✅ 익절 {v["win"]}회<br>➖ 본절 {v["be"]}회<br>🛑 손절 {v["loss"]}회</td>'
                  f'<td>{money(v["pnl"])}</td>'
                  f'<td><div class="bar"><i style="width:{bar:.0f}%"></i></div>{pct:.0f}%</td>'
                  f'<td class="muted">{eq}</td><td class="small">{tr_html}</td><td class="muted small">{srcs}</td></tr>')
