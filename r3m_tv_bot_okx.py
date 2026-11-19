@@ -693,7 +693,7 @@ def format_day_summary(date: str) -> str:
     ]
     dep, wd = day.get("dep", 0.0), day.get("wd", 0.0)
     if dep or wd:
-        lines.append(f"🏦 입출금: 입금 +{dep:.2f} / 출금 {wd:.2f}")
+        lines.append(f"🏦 입출금: 입금 +{dep:.2f} / 출금 {wd:.2f} → 합계 {dep + wd:+.2f}")
     if day.get("start_eq") is not None and day.get("end_eq") is not None:
         net = day["end_eq"] - day["start_eq"] - dep - wd
         lines.append(f"💼 잔고(현금): {day['start_eq']:.2f} → {day['end_eq']:.2f}"
@@ -774,7 +774,8 @@ def render_report_html() -> bytes:
                       f'<div class="cv">{money(t["pnl"])} <small>USDT</small></div>'
                       f'<div class="cs">{t["days"]}일 · {t["n"]}번 · ✅{t["win"]} ➖{t["be"]} 🛑{t["loss"]}'
                       f'<br>하루 평균 {avg:+.2f}'
-                      + (f'<br>입금 +{t["dep"]:.0f} · 출금 {t["wd"]:.0f}' if (t["dep"] or t["wd"]) else '')
+                      + (f'<br>입금 +{t["dep"]:.0f} · 출금 {t["wd"]:.0f} · 합계 {t["dep"] + t["wd"]:+.0f}'
+                         if (t["dep"] or t["wd"]) else '')
                       + '</div></div>')
 
     rows = ""
@@ -789,6 +790,9 @@ def render_report_html() -> bytes:
             tr.append(f'<span class="pos">입금 +{v["dep"]:.0f}</span>')
         if v.get("wd"):
             tr.append(f'<span class="neg">출금 {v["wd"]:.0f}</span>')
+        if v.get("dep") and v.get("wd"):
+            net_tr = v["dep"] + v["wd"]
+            tr.append(f'<b>합계 {money(net_tr)}</b>')
         tr_html = "<br>".join(tr) or '<span class="muted">-</span>'
         srcs = " · ".join(f'{esc(k)} {x["pnl"]:+.1f}' for k, x in v["by_source"].items())
         rows += (f'<tr><td>{esc(d[5:])}</td><td>{n}</td><td>✅{v["win"]} ➖{v["be"]} 🛑{v["loss"]}</td>'
