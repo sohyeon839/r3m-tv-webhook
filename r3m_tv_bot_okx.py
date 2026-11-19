@@ -774,8 +774,6 @@ def render_report_html() -> bytes:
                       f'<div class="cv">{money(t["pnl"])} <small>USDT</small></div>'
                       f'<div class="cs">{t["days"]}일 · {t["n"]}번 · ✅{t["win"]} ➖{t["be"]} 🛑{t["loss"]}'
                       f'<br>하루 평균 {avg:+.2f}'
-                      + (f'<br>입금 +{t["dep"]:.0f} · 출금 {t["wd"]:.0f} · 합계 {t["dep"] + t["wd"]:+.0f}'
-                         if (t["dep"] or t["wd"]) else '')
                       + '</div></div>')
 
     rows = ""
