@@ -34,6 +34,7 @@ from __future__ import annotations
 import base64
 import hmac
 import hashlib
+import html
 import json
 import re
 import logging
@@ -125,6 +126,10 @@ ZETRO_API_ENTRY_ENABLED = True
 
 # zetro 웹훅 수신 주소 (zetro 웹훅 설정에 넣을 주소의 뒷부분)
 ZETRO_HOOK_PATH = "/zetro-hook/5472118043e07db5"
+
+# 매매 기록지 페이지 주소 (폰 브라우저로 열기). 뒤 글자는 비밀번호 역할이라 공유하지 마세요.
+REPORT_PATH = "/report/5472118043e07db5"
+DAILY_TARGET_USD = 100.0   # 기록지에 표시할 하루 목표 수익
 
 # ----------------------------------------------------------------------------
 # zetro 웹훅 진입 규칙 (zetro 알림 만들기에서 거래대금·위험/주의 코인 등 필터를 걸어둔 알림만 옴)
@@ -573,6 +578,199 @@ def format_cum_stats() -> str:
         lines.append(f"  · {name}: {src['win']}승 {src['loss']}패, {src['pnl']:+.2f} USDT"
                      f" (승률 {src['win'] / m * 100:.0f}%)" if m else f"  · {name}: -")
     return "\n".join(lines)
+
+
+# ----------------------------------------------------------------------------
+# 매매 기록지
+# ----------------------------------------------------------------------------
+
+def _journal_day(date: str) -> dict:
+    j = _state.setdefault("journal", {})
+    return j.setdefault(date, {"win": 0, "be": 0, "loss": 0, "pnl": 0.0, "by_source": {},
+                               "start_eq": None, "end_eq": None})
+
+
+def journal_record(inst_id: str, source: str, side: Optional[str], pnl: float) -> str:
+    """거래 1건을 기록지에 남김. 결과 종류(익절/본절/손절)를 돌려줌."""
+    kind = "loss" if pnl < 0 else ("be" if pnl < 1.0 else "win")
+    day = _journal_day(_today())
+    day[kind] += 1
+    day["pnl"] += pnl
+    src = day["by_source"].setdefault(source, {"win": 0, "be": 0, "loss": 0, "pnl": 0.0})
+    src[kind] += 1
+    src["pnl"] += pnl
+    log_list = _state.setdefault("trade_log", [])
+    log_list.append({"t": int(time.time() * 1000), "inst": inst_id, "src": source,
+                     "side": side, "pnl": round(pnl, 4), "kind": kind})
+    if len(log_list) > 1000:
+        del log_list[:-1000]
+    j = _state["journal"]
+    if len(j) > 400:
+        for k in sorted(j)[:-400]:
+            j.pop(k, None)
+    save_state(_state)
+    return kind
+
+
+def journal_set_equity(cash: float) -> None:
+    day = _journal_day(_today())
+    if day.get("start_eq") is None:
+        day["start_eq"] = round(cash, 2)
+    day["end_eq"] = round(cash, 2)
+    save_state(_state)
+
+
+def seed_journal_today() -> None:
+    """기록지가 처음 생길 때, 오늘 이미 쌓인 성적을 오늘 칸에 넣어둠."""
+    if _state.get("journal"):
+        return
+    wl = _daily("daily_win_loss", {"win": 0, "loss": 0})
+    pnl = _daily("daily_pnl", {"total": 0.0})["total"]
+    day = _journal_day(_today())
+    day["win"] = wl.get("win", 0)
+    day["loss"] = wl.get("loss", 0)
+    day["pnl"] = pnl
+    save_state(_state)
+
+
+def report_url() -> str:
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or "r3m-tv-webhook-production-abf1.up.railway.app"
+    return f"https://{domain}{REPORT_PATH}"
+
+
+def format_day_summary(date: str) -> str:
+    day = _state.get("journal", {}).get(date)
+    if not day:
+        return f"🗓 {date}\n거래 없음"
+    n = day["win"] + day["be"] + day["loss"]
+    pct = (day["pnl"] / DAILY_TARGET_USD * 100) if DAILY_TARGET_USD else 0
+    lines = [
+        f"🗓 {date} 하루 정산",
+        f"🔢 거래 {n}번 · ✅ {day['win']} / ➖ {day['be']} / 🛑 {day['loss']}",
+        f"💵 실현손익: {day['pnl']:+.2f} USDT",
+        f"🎯 목표 {DAILY_TARGET_USD:.0f} 대비 {pct:.0f}%",
+    ]
+    if day.get("start_eq") is not None and day.get("end_eq") is not None:
+        lines.append(f"🏦 잔고(현금): {day['start_eq']:.2f} → {day['end_eq']:.2f}")
+    for name, src in day["by_source"].items():
+        lines.append(f"  · {name}: ✅{src['win']} ➖{src['be']} 🛑{src['loss']}, {src['pnl']:+.2f}")
+    lines.append(f"📒 기록지: {report_url()}")
+    return "\n".join(lines)
+
+
+def daily_close_loop():
+    """한국시간 0시가 지나면 어제 하루 정산을 텔레그램으로 보냄."""
+    while True:
+        try:
+            today = _today()
+            with _state_lock:
+                last = _state.get("journal_last_day")
+                if last is None:
+                    _state["journal_last_day"] = today
+                    save_state(_state)
+                    last = today
+            if last != today:
+                with _state_lock:
+                    text = format_day_summary(last)
+                    _state["journal_last_day"] = today
+                    save_state(_state)
+                notify("📒 하루 정산 (OKX)", text)
+        except Exception as e:  # noqa: BLE001
+            log.warning("하루 정산 오류: %s", e)
+        time.sleep(60)
+
+
+def render_report_html() -> bytes:
+    with _state_lock:
+        journal = json.loads(json.dumps(_state.get("journal", {})))
+        trades = list(_state.get("trade_log", []))[-60:]
+    days = sorted(journal.items(), reverse=True)
+    esc = html.escape
+
+    def money(v):
+        cls = "pos" if v > 0 else ("neg" if v < 0 else "")
+        return f'<span class="{cls}">{v:+.2f}</span>'
+
+    # 합계 (전체 / 이번 주 / 이번 달)
+    now = datetime.now(KST)
+    week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+    month = now.strftime("%Y-%m")
+    def total(filter_fn):
+        t = {"n": 0, "win": 0, "be": 0, "loss": 0, "pnl": 0.0, "days": 0}
+        for d, v in journal.items():
+            if filter_fn(d):
+                t["days"] += 1
+                for k in ("win", "be", "loss"):
+                    t[k] += v[k]
+                t["pnl"] += v["pnl"]
+        t["n"] = t["win"] + t["be"] + t["loss"]
+        return t
+    cards = [("이번 주", total(lambda d: d >= week_start)),
+             ("이번 달", total(lambda d: d.startswith(month))),
+             ("전체 기록", total(lambda d: True))]
+    card_html = ""
+    for title, t in cards:
+        avg = t["pnl"] / t["days"] if t["days"] else 0
+        card_html += (f'<div class="card"><div class="ct">{title}</div>'
+                      f'<div class="cv">{money(t["pnl"])} <small>USDT</small></div>'
+                      f'<div class="cs">{t["days"]}일 · {t["n"]}번 · ✅{t["win"]} ➖{t["be"]} 🛑{t["loss"]}'
+                      f'<br>하루 평균 {avg:+.2f}</div></div>')
+
+    rows = ""
+    for d, v in days:
+        n = v["win"] + v["be"] + v["loss"]
+        pct = (v["pnl"] / DAILY_TARGET_USD * 100) if DAILY_TARGET_USD else 0
+        bar = max(0, min(100, pct))
+        eq = (f'{v["start_eq"]:.0f} → {v["end_eq"]:.0f}'
+              if v.get("start_eq") is not None and v.get("end_eq") is not None else "-")
+        srcs = " · ".join(f'{esc(k)} {x["pnl"]:+.1f}' for k, x in v["by_source"].items())
+        rows += (f'<tr><td>{esc(d[5:])}</td><td>{n}</td><td>✅{v["win"]} ➖{v["be"]} 🛑{v["loss"]}</td>'
+                 f'<td>{money(v["pnl"])}</td>'
+                 f'<td><div class="bar"><i style="width:{bar:.0f}%"></i></div>{pct:.0f}%</td>'
+                 f'<td class="muted">{eq}</td><td class="muted small">{srcs}</td></tr>')
+    if not rows:
+        rows = '<tr><td colspan="7" class="muted">아직 기록이 없어요</td></tr>'
+
+    trows = ""
+    for t in reversed(trades):
+        ts = datetime.fromtimestamp(t["t"] / 1000, KST).strftime("%m-%d %H:%M")
+        kind = {"win": "✅ 익절", "be": "➖ 본절", "loss": "🛑 손절"}.get(t["kind"], "")
+        side = {"L": "롱", "S": "숏"}.get(t.get("side"), "")
+        trows += (f'<tr><td>{ts}</td><td>{esc(t["inst"].replace("-USDT-SWAP", ""))}</td>'
+                  f'<td>{esc(t["src"] or "")} {side}</td><td>{kind}</td><td>{money(t["pnl"])}</td></tr>')
+    if not trows:
+        trows = '<tr><td colspan="5" class="muted">아직 거래가 없어요</td></tr>'
+
+    page = f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="60"><title>매매 기록지</title>
+<style>
+:root{{--bg:#f6f7f9;--fg:#15171a;--card:#fff;--muted:#6b7280;--line:#e5e7eb;--pos:#0f9d58;--neg:#d93025;--acc:#3b6cff}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0f1115;--fg:#e8eaed;--card:#181b21;--muted:#9aa0a6;--line:#2a2e36;--pos:#34c77b;--neg:#ff6b6b;--acc:#7b9bff}}}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}}
+.wrap{{max-width:900px;margin:0 auto;padding:16px}}
+h1{{font-size:20px;margin:4px 0 2px}} .sub{{color:var(--muted);font-size:12px;margin-bottom:14px}}
+.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:18px}}
+.card{{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}}
+.ct{{color:var(--muted);font-size:12px}} .cv{{font-size:22px;font-weight:700;margin:2px 0}} .cs{{color:var(--muted);font-size:12px}}
+h2{{font-size:15px;margin:18px 0 8px}}
+.tbl{{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow-x:auto}}
+table{{width:100%;border-collapse:collapse;white-space:nowrap}}
+th,td{{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left}} th{{color:var(--muted);font-weight:600;font-size:12px}}
+tr:last-child td{{border-bottom:0}} .pos{{color:var(--pos);font-weight:600}} .neg{{color:var(--neg);font-weight:600}}
+.muted{{color:var(--muted)}} .small{{font-size:12px}}
+.bar{{display:inline-block;width:60px;height:6px;background:var(--line);border-radius:3px;margin-right:6px;vertical-align:middle;overflow:hidden}}
+.bar i{{display:block;height:100%;background:var(--acc)}}
+</style></head><body><div class="wrap">
+<h1>📒 매매 기록지</h1>
+<div class="sub">봇 거래만 기록 (수동 거래 제외) · 하루 기준 한국시간 0시 · 목표 하루 {DAILY_TARGET_USD:.0f} USDT · 1분마다 새로고침</div>
+<div class="cards">{card_html}</div>
+<h2>일별 기록</h2>
+<div class="tbl"><table><tr><th>날짜</th><th>거래</th><th>결과</th><th>실현손익</th><th>목표 달성</th><th>잔고(현금)</th><th>신호별</th></tr>{rows}</table></div>
+<h2>최근 거래</h2>
+<div class="tbl"><table><tr><th>시간</th><th>종목</th><th>신호</th><th>결과</th><th>손익</th></tr>{trows}</table></div>
+</div></body></html>"""
+    return page.encode("utf-8")
 
 
 def normalize_symbol(sym: str) -> str:
@@ -1311,6 +1509,7 @@ def heartbeat_loop():
             upl = summary["unrealized_pnl"]
             with _state_lock:
                 ensure_daily_base(summary["usdt_balance"] - upl)
+                journal_set_equity(summary["usdt_balance"] - upl)
             open_positions = _executor.get_open_positions()
             if open_positions:
                 lines = []
@@ -1474,6 +1673,10 @@ def sl_watch_loop():
                             save_state(_state)
                         continue
 
+                with _state_lock:
+                    j_entries = _state.get("positions", {}).get(inst_id) or []
+                    j_source = (j_entries[0].get("source") if j_entries else None) or "기타"
+                    j_side = j_entries[0].get("side") if j_entries else None
                 hist = _executor._request("GET", "/api/v5/account/positions-history",
                                           params={"instId": inst_id, "limit": "1"})
                 rows = hist.get("data", [])
@@ -1485,6 +1688,7 @@ def sl_watch_loop():
                         record_sl_hit()
                     win_loss = record_win_loss(is_win)
                     daily_pnl = record_daily_pnl(pnl)
+                    journal_record(inst_id, j_source, j_side, pnl)
                     maybe_notify_loss_limit()
                     if source:
                         record_cum_trade(source, pnl)
@@ -1542,8 +1746,18 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        body = b'{"ok":true}'
+        path_only = self.path.split("?", 1)[0].rstrip("/")
+        if path_only == REPORT_PATH:
+            try:
+                body = render_report_html()
+                ctype = "text/html; charset=utf-8"
+            except Exception as e:  # noqa: BLE001
+                log.warning("기록지 페이지 오류: %s", e)
+                body, ctype = "기록지를 만드는 중 오류가 났어요".encode("utf-8"), "text/plain; charset=utf-8"
+        else:
+            body, ctype = b'{"ok":true}', "application/json"
         self.send_response(200)
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1564,6 +1778,7 @@ def main():
     purge_excluded_sources()
     merge_split_sources()
     sync_positions_from_exchange()
+    seed_journal_today()
 
     log.info("상태 파일 위치: %s (%s)", STATE_FILE.resolve(),
              "Volume 사용 중 — 재배포해도 기록 유지" if os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
@@ -1574,6 +1789,8 @@ def main():
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=sl_watch_loop, daemon=True).start()
     threading.Thread(target=manage_positions_loop, daemon=True).start()
+    threading.Thread(target=daily_close_loop, daemon=True).start()
+    log.info("매매 기록지: %s", report_url())
     if ZETRO_API_KEY:
         threading.Thread(target=zetro_poll_loop, daemon=True).start()
         threading.Thread(target=screener_poll_loop, daemon=True).start()
