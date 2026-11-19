@@ -590,9 +590,32 @@ def _journal_day(date: str) -> dict:
                                "start_eq": None, "end_eq": None})
 
 
-def journal_record(inst_id: str, source: str, side: Optional[str], pnl: float) -> str:
+BE_MOVE_PCT = 0.009   # 평균 청산가가 진입가에서 0.9% 안쪽이면 "본절" (분할 익절 후 나머지가 진입가 근처에서 끝난 경우)
+
+
+def classify_close(pnl: float, row: Optional[dict]) -> str:
+    """OKX 포지션 기록으로 익절/본절/손절 구분."""
+    if pnl < 0:
+        return "loss"
+    if pnl < 1.0:
+        return "be"
+    try:
+        o = float(row.get("openAvgPx") or 0)
+        c = float(row.get("closeAvgPx") or 0)
+        if o and c:
+            long_ = str(row.get("direction", "")).lower() == "long"
+            move = (c - o) / o if long_ else (o - c) / o
+            if move < BE_MOVE_PCT:
+                return "be"
+    except Exception:  # noqa: BLE001
+        pass
+    return "win"
+
+
+def journal_record(inst_id: str, source: str, side: Optional[str], pnl: float,
+                   kind: Optional[str] = None) -> str:
     """거래 1건을 기록지에 남김. 결과 종류(익절/본절/손절)를 돌려줌."""
-    kind = "loss" if pnl < 0 else ("be" if pnl < 1.0 else "win")
+    kind = kind or ("loss" if pnl < 0 else ("be" if pnl < 1.0 else "win"))
     day = _journal_day(_today())
     day[kind] += 1
     day["pnl"] += pnl
@@ -667,7 +690,7 @@ BACKFILL_DATES = ["2026-11-19"]
 
 def backfill_journal() -> None:
     with _state_lock:
-        done = set(_state.get("backfilled", []))
+        done = set(_state.get("backfilled_v2", []))
     todo = [d for d in BACKFILL_DATES if d not in done]
     if not todo:
         return
@@ -703,7 +726,7 @@ def backfill_journal() -> None:
         if date not in agg:
             continue
         pnl = float(r.get("pnl", 0) or 0)
-        kind = "loss" if pnl < 0 else ("be" if pnl < 1.0 else "win")
+        kind = classify_close(pnl, r)
         agg[date][kind] += 1
         agg[date]["pnl"] += pnl
 
@@ -714,7 +737,7 @@ def backfill_journal() -> None:
             day["backfilled"] = True
             log.info("기록지 %s 다시 계산: 익절 %d / 본절 %d / 손절 %d, %+.2f (BTC·ETH 제외)",
                      d, a["win"], a["be"], a["loss"], a["pnl"])
-        _state["backfilled"] = sorted(done | set(todo))
+        _state["backfilled_v2"] = sorted(done | set(todo))
         save_state(_state)
 
 
@@ -1834,7 +1857,8 @@ def sl_watch_loop():
                         record_sl_hit()
                     win_loss = record_win_loss(is_win)
                     daily_pnl = record_daily_pnl(pnl)
-                    journal_record(inst_id, j_source, j_side, pnl)
+                    close_kind = journal_record(inst_id, j_source, j_side, pnl,
+                                                kind=classify_close(pnl, rows[0] if rows else None))
                     maybe_notify_loss_limit()
                     if source:
                         record_cum_trade(source, pnl)
@@ -1844,8 +1868,8 @@ def sl_watch_loop():
 
                 if not is_win:
                     title = "🛑 손절"
-                elif pnl < 1.0:
-                    title = "➖ 본절 종료"
+                elif close_kind == "be":
+                    title = "➖ 본절 종료 (분할 익절분 포함)" if pnl >= 1.0 else "➖ 본절 종료"
                 else:
                     title = "✅ 익절"
                 notify(f"{title} (OKX)",
