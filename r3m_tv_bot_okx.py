@@ -650,6 +650,15 @@ def journal_set_equity(cash: float, total: Optional[float] = None) -> None:
     save_state(_state)
 
 
+def bot_start_balances(journal: dict) -> dict:
+    """자동매매만 따로 본 '0시 잔액': 시작 금액 + 그 전날까지 봇 실현손익 합계 (수동·입출금 제외)"""
+    out, run = {}, STARTING_BALANCE
+    for d in sorted(k for k in journal if k >= JOURNAL_START):
+        out[d] = run
+        run += journal[d].get("pnl", 0.0)
+    return out
+
+
 def day_growth(day: dict) -> Optional[float]:
     """그날 수익률(%) = (마감 잔액 - 0시 잔액 - 입출금) / 0시 잔액"""
     st, en = day.get("start_total"), day.get("end_total")
@@ -806,13 +815,13 @@ def format_day_summary(date: str) -> str:
     dep, wd = day.get("dep", 0.0), day.get("wd", 0.0)
     if dep or wd:
         lines.append(f"🏦 입출금: 입금 +{dep:.2f} / 출금 {wd:.2f} → 합계 {dep + wd:+.2f}")
-    if day.get("start_total") is not None and day.get("end_total") is not None:
-        g = day_growth(day)
-        lines.append(f"🌅 0시 잔액 {day['start_total']:.2f} → 마감 {day['end_total']:.2f}"
-                     + (f" (하루 수익률 {g:+.2f}%)" if g is not None else ""))
+    b_start = bot_start_balances(_state.get("journal", {})).get(date)
+    if b_start:
+        lines.append(f"🌅 자동매매 0시 잔액 {b_start:.2f} → 마감 {b_start + day['pnl']:.2f}"
+                     f" (하루 수익률 {day['pnl'] / b_start * 100:+.2f}%)")
     acct = _state.get("last_account")
     if acct:
-        lines.append(f"💰 총 잔액: {acct['eq']:.2f} USDT (미실현 {acct['upl']:+.2f})")
+        lines.append(f"💰 계좌 전체 잔액: {acct['eq']:.2f} USDT (수동 포함)")
     for name, src in day["by_source"].items():
         lines.append(f"  · {name}: 익절 {src['win']}회 · 본절 {src['be']}회 · 손절 {src['loss']}회, {src['pnl']:+.2f}")
     lines.append(f"📒 기록지: {report_url()}")
@@ -868,50 +877,35 @@ def render_report_html() -> bytes:
     def fmt(v, d=2):
         return f"{v:+,.{d}f}"
 
-    # ---------- 시작 대비
-    net_tr = sum(v.get("dep", 0.0) + v.get("wd", 0.0) for d, v in journal.items() if d >= JOURNAL_START)
-    eq = acct.get("eq")
-    gain = (eq - STARTING_BALANCE - net_tr) if (eq is not None and STARTING_BALANCE) else None
-    rate = (gain / STARTING_BALANCE * 100) if gain is not None else None
+    # ---------- 자동매매만 (수동 거래·입출금 제외)
+    starts = bot_start_balances(journal)
+    bot_real = sum(v.get("pnl", 0.0) for d, v in journal.items() if d >= JOURNAL_START)
+    bot_upl = acct.get("bot_upl", 0.0) if acct else 0.0
+    bot_eq = STARTING_BALANCE + bot_real + bot_upl
+    gain = bot_real + bot_upl
+    rate = gain / STARTING_BALANCE * 100 if STARTING_BALANCE else 0
     upd = datetime.fromtimestamp(acct["t"] / 1000, KST).strftime("%H:%M") if acct else "-"
-
-    # ---------- 잔액 흐름 그래프 (0시 잔액 + 지금)
-    pts = [(d, v["start_total"]) for d, v in sorted(journal.items()) if v.get("start_total") is not None]
-    if eq is not None:
-        pts.append(("now", eq))
-    spark = ""
-    if len(pts) >= 2:
-        vals = [p[1] for p in pts]
-        lo, hi = min(vals), max(vals)
-        rng = (hi - lo) or 1
-        W, H, P = 300, 64, 4
-        xy = [(P + i * (W - 2 * P) / (len(vals) - 1), H - P - (v - lo) / rng * (H - 2 * P)) for i, v in enumerate(vals)]
-        line = " ".join(f"{x:.1f},{y:.1f}" for x, y in xy)
-        area = f"{xy[0][0]:.1f},{H} " + line + f" {xy[-1][0]:.1f},{H}"
-        up = vals[-1] >= vals[0]
-        spark = (f'<svg class="spark {"up" if up else "down"}" viewBox="0 0 {W} {H}" preserveAspectRatio="none">'
-                 f'<polygon points="{area}" class="fill"/><polyline points="{line}" class="ln"/>'
-                 f'<circle cx="{xy[-1][0]:.1f}" cy="{xy[-1][1]:.1f}" r="3.5" class="dot"/></svg>'
-                 f'<div class="sparklab"><span>{esc(pts[0][0][5:].replace("-", "/"))}</span><span>지금</span></div>')
+    acct_line = (f'<div class="note">계좌 전체 잔액 {acct["eq"]:,.2f} (수동 거래·입출금 포함)</div>' if acct else '')
 
     hero = f'''
 <section class="hero">
-  <div class="lab">총 잔액 <span class="muted">· {upd} 기준</span></div>
-  <div class="big">{eq:,.2f}<small> USDT</small></div>
-  <div class="sub">미실현 <b class="{cls(acct.get("upl", 0))}">{fmt(acct.get("upl", 0))}</b></div>
+  <div class="lab">자동매매 잔액 <span class="muted">· {upd} 기준</span></div>
+  <div class="big">{bot_eq:,.2f}<small> USDT</small></div>
+  <div class="sub">자동매매 미실현 <b class="{cls(bot_upl)}">{fmt(bot_upl)}</b> · 실현 <b class="{cls(bot_real)}">{fmt(bot_real)}</b></div>
   <div class="startrow">
     <div><div class="lab">🚩 시작 ({esc(JOURNAL_START[5:].replace("-", "/"))})</div><div class="mid">{STARTING_BALANCE:,.0f}</div></div>
     <div class="r"><div class="lab">시작 대비 순수익</div>
-      <div class="mid {cls(gain or 0)}">{fmt(gain) if gain is not None else "-"}</div>
-      <div class="pill {cls(rate or 0)}">{fmt(rate) + "%" if rate is not None else "-"}</div></div>
+      <div class="mid {cls(gain)}">{fmt(gain)}</div>
+      <div class="pill {cls(rate)}">{fmt(rate)}%</div></div>
   </div>
-  <div class="note">입출금 {net_tr:+,.0f}은 빼고 계산했어요</div>
-</section>''' if eq is not None else '<section class="hero"><div class="lab">총 잔액</div><div class="big">-</div><div class="sub">첫 정기 리포트 후에 보여요</div></section>'
+  {acct_line}
+</section>'''
 
     # ---------- 오늘
     td = journal.get(today, {"win": 0, "be": 0, "loss": 0, "pnl": 0.0})
     tpct = (td["pnl"] / DAILY_TARGET_USD * 100) if DAILY_TARGET_USD else 0
-    tg = day_growth(td) if td.get("start_total") is not None else None
+    t_start = starts.get(today)
+    tg = (td["pnl"] / t_start * 100) if t_start else None
     today_html = f'''
 <section class="card today">
   <div class="row"><div class="lab">오늘 · {now.month}/{now.day}({WD[now.weekday()]})</div>
@@ -920,7 +914,7 @@ def render_report_html() -> bytes:
     <div class="pct">{tpct:.0f}%</div></div>
   <div class="bar"><i style="width:{max(0, min(100, tpct)):.0f}%"></i></div>
   <div class="chips"><span class="chip w">✅ 익절 {td["win"]}회</span><span class="chip b">➖ 본절 {td["be"]}회</span><span class="chip l">🛑 손절 {td["loss"]}회</span></div>
-  {f'<div class="note">0시 잔액 {td["start_total"]:,.2f} · 하루 수익률 <b class="{cls(tg or 0)}">{fmt(tg)}%</b></div>' if tg is not None else ''}
+  {f'<div class="note">0시 잔액 {t_start:,.2f} · 하루 수익률 <b class="{cls(tg)}">{fmt(tg)}%</b></div>' if tg is not None else ''}
 </section>'''
 
     # ---------- 기간 합계
@@ -954,10 +948,11 @@ def render_report_html() -> bytes:
         dt = datetime.strptime(d, "%Y-%m-%d")
         n = v["win"] + v["be"] + v["loss"]
         pct = (v["pnl"] / DAILY_TARGET_USD * 100) if DAILY_TARGET_USD else 0
-        g = day_growth(v) if v.get("start_total") is not None else None
-        bal = (f'<b>{v["start_total"]:,.2f}</b>'
+        b_start = starts.get(d)
+        g = (v["pnl"] / b_start * 100) if b_start else None
+        bal = (f'<b>{b_start:,.2f}</b>'
                + (f'<br><span class="tiny">하루 <b class="{cls(g)}">{fmt(g)}%</b></span>' if g is not None else '')
-               if v.get("start_total") is not None else '<span class="muted">-</span>')
+               if b_start else '<span class="muted">-</span>')
         tr = []
         if v.get("dep"):
             tr.append(f'<span class="pos">입금 +{v["dep"]:,.0f}</span>')
@@ -1842,6 +1837,15 @@ def heartbeat_loop():
                 _state["last_account"] = {"eq": round(summary["usdt_balance"], 2), "upl": round(upl, 2),
                                           "t": int(time.time() * 1000)}
             open_positions = _executor.get_open_positions()
+            with _state_lock:
+                st_pos = _state.get("positions", {})
+                bot_upl = 0.0
+                for p in open_positions:
+                    ents = st_pos.get(p.get("instId")) or []
+                    if ents and ents[0].get("tp_px") and not ents[0].get("manual"):
+                        bot_upl += float(p.get("upl", 0) or 0)
+                if _state.get("last_account"):
+                    _state["last_account"]["bot_upl"] = round(bot_upl, 2)
             if open_positions:
                 lines = []
                 for p in open_positions:
