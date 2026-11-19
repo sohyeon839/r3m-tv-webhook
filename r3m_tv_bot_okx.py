@@ -620,6 +620,47 @@ def journal_set_equity(cash: float) -> None:
     save_state(_state)
 
 
+def sync_transfers() -> None:
+    """OKX 이체 내역을 읽어서 입금(거래 계정으로 들어옴)·출금(나감)을 날짜별 기록지에 남김."""
+    try:
+        bills = _executor.get_transfer_bills()
+    except Exception as e:  # noqa: BLE001
+        if not _state.get("_transfer_warned"):
+            log.warning("이체 내역 조회 실패(API 키에 읽기 권한이 있는지 확인): %s", format_okx_error(e))
+            _state["_transfer_warned"] = True
+        return
+    new_items = []
+    with _state_lock:
+        seen = _state.setdefault("transfer_seen", [])
+        first = not seen and not _state.get("transfer_init")
+        today = _today()
+        for b in sorted(bills, key=lambda x: int(x.get("ts", 0) or 0)):
+            bid = str(b.get("billId", ""))
+            if not bid or bid in seen:
+                continue
+            seen.append(bid)
+            amt = float(b.get("balChg", 0) or 0)
+            ts = int(b.get("ts", 0) or 0)
+            date = datetime.fromtimestamp(ts / 1000, KST).strftime("%Y-%m-%d")
+            if first and date != today:
+                continue   # 처음 켰을 때는 오늘 것만 기록
+            day = _journal_day(date)
+            if amt >= 0:
+                day["dep"] = round(day.get("dep", 0.0) + amt, 2)
+            else:
+                day["wd"] = round(day.get("wd", 0.0) + amt, 2)
+            new_items.append((date, amt))
+        _state["transfer_init"] = True
+        if len(seen) > 500:
+            del seen[:-500]
+        save_state(_state)
+    for date, amt in new_items:
+        if amt < 0:
+            notify("🏦 출금 기록 (OKX)", f"거래 계정에서 {amt:.2f} USDT 나갔어요.\n기록지 {date} 칸에 출금으로 남겼어요.")
+        else:
+            notify("🏦 입금 기록 (OKX)", f"거래 계정으로 +{amt:.2f} USDT 들어왔어요.\n기록지 {date} 칸에 입금으로 남겼어요.")
+
+
 def seed_journal_today() -> None:
     """기록지가 처음 생길 때, 오늘 이미 쌓인 성적을 오늘 칸에 넣어둠."""
     if _state.get("journal"):
@@ -650,8 +691,13 @@ def format_day_summary(date: str) -> str:
         f"💵 실현손익: {day['pnl']:+.2f} USDT",
         f"🎯 목표 {DAILY_TARGET_USD:.0f} 대비 {pct:.0f}%",
     ]
+    dep, wd = day.get("dep", 0.0), day.get("wd", 0.0)
+    if dep or wd:
+        lines.append(f"🏦 입출금: 입금 +{dep:.2f} / 출금 {wd:.2f}")
     if day.get("start_eq") is not None and day.get("end_eq") is not None:
-        lines.append(f"🏦 잔고(현금): {day['start_eq']:.2f} → {day['end_eq']:.2f}")
+        net = day["end_eq"] - day["start_eq"] - dep - wd
+        lines.append(f"💼 잔고(현금): {day['start_eq']:.2f} → {day['end_eq']:.2f}"
+                     f" (입출금 빼면 {net:+.2f})")
     for name, src in day["by_source"].items():
         lines.append(f"  · {name}: ✅{src['win']} ➖{src['be']} 🛑{src['loss']}, {src['pnl']:+.2f}")
     lines.append(f"📒 기록지: {report_url()}")
@@ -696,13 +742,15 @@ def render_report_html() -> bytes:
     week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
     month = now.strftime("%Y-%m")
     def total(filter_fn):
-        t = {"n": 0, "win": 0, "be": 0, "loss": 0, "pnl": 0.0, "days": 0}
+        t = {"n": 0, "win": 0, "be": 0, "loss": 0, "pnl": 0.0, "days": 0, "dep": 0.0, "wd": 0.0}
         for d, v in journal.items():
             if filter_fn(d):
                 t["days"] += 1
                 for k in ("win", "be", "loss"):
                     t[k] += v[k]
                 t["pnl"] += v["pnl"]
+                t["dep"] += v.get("dep", 0.0)
+                t["wd"] += v.get("wd", 0.0)
         t["n"] = t["win"] + t["be"] + t["loss"]
         return t
     cards = [("이번 주", total(lambda d: d >= week_start)),
@@ -714,7 +762,9 @@ def render_report_html() -> bytes:
         card_html += (f'<div class="card"><div class="ct">{title}</div>'
                       f'<div class="cv">{money(t["pnl"])} <small>USDT</small></div>'
                       f'<div class="cs">{t["days"]}일 · {t["n"]}번 · ✅{t["win"]} ➖{t["be"]} 🛑{t["loss"]}'
-                      f'<br>하루 평균 {avg:+.2f}</div></div>')
+                      f'<br>하루 평균 {avg:+.2f}'
+                      + (f'<br>입금 +{t["dep"]:.0f} · 출금 {t["wd"]:.0f}' if (t["dep"] or t["wd"]) else '')
+                      + '</div></div>')
 
     rows = ""
     for d, v in days:
@@ -723,13 +773,19 @@ def render_report_html() -> bytes:
         bar = max(0, min(100, pct))
         eq = (f'{v["start_eq"]:.0f} → {v["end_eq"]:.0f}'
               if v.get("start_eq") is not None and v.get("end_eq") is not None else "-")
+        tr = []
+        if v.get("dep"):
+            tr.append(f'<span class="pos">입금 +{v["dep"]:.0f}</span>')
+        if v.get("wd"):
+            tr.append(f'<span class="neg">출금 {v["wd"]:.0f}</span>')
+        tr_html = "<br>".join(tr) or '<span class="muted">-</span>'
         srcs = " · ".join(f'{esc(k)} {x["pnl"]:+.1f}' for k, x in v["by_source"].items())
         rows += (f'<tr><td>{esc(d[5:])}</td><td>{n}</td><td>✅{v["win"]} ➖{v["be"]} 🛑{v["loss"]}</td>'
                  f'<td>{money(v["pnl"])}</td>'
                  f'<td><div class="bar"><i style="width:{bar:.0f}%"></i></div>{pct:.0f}%</td>'
-                 f'<td class="muted">{eq}</td><td class="muted small">{srcs}</td></tr>')
+                 f'<td class="muted">{eq}</td><td class="small">{tr_html}</td><td class="muted small">{srcs}</td></tr>')
     if not rows:
-        rows = '<tr><td colspan="7" class="muted">아직 기록이 없어요</td></tr>'
+        rows = '<tr><td colspan="8" class="muted">아직 기록이 없어요</td></tr>'
 
     trows = ""
     for t in reversed(trades):
@@ -766,7 +822,7 @@ tr:last-child td{{border-bottom:0}} .pos{{color:var(--pos);font-weight:600}} .ne
 <div class="sub">봇 거래만 기록 (수동 거래 제외) · 하루 기준 한국시간 0시 · 목표 하루 {DAILY_TARGET_USD:.0f} USDT · 1분마다 새로고침</div>
 <div class="cards">{card_html}</div>
 <h2>일별 기록</h2>
-<div class="tbl"><table><tr><th>날짜</th><th>거래</th><th>결과</th><th>실현손익</th><th>목표 달성</th><th>잔고(현금)</th><th>신호별</th></tr>{rows}</table></div>
+<div class="tbl"><table><tr><th>날짜</th><th>거래</th><th>결과</th><th>실현손익</th><th>목표 달성</th><th>잔고(현금)</th><th>입출금</th><th>신호별</th></tr>{rows}</table></div>
 <h2>최근 거래</h2>
 <div class="tbl"><table><tr><th>시간</th><th>종목</th><th>신호</th><th>결과</th><th>손익</th></tr>{trows}</table></div>
 </div></body></html>"""
@@ -909,6 +965,12 @@ class OkxExecutor:
             "usdt_balance": float(detail.get("eq", 0) or 0),
             "unrealized_pnl": float(detail.get("upl", 0) or 0),
         }
+
+    def get_transfer_bills(self) -> list:
+        """거래 계정 USDT 이체 내역 (자금 계정 ↔ 거래 계정). 최근 7일, 최신순."""
+        data = self._request("GET", "/api/v5/account/bills",
+                             params={"ccy": "USDT", "type": "1", "limit": "100"})
+        return data.get("data", []) or []
 
     def get_position_size(self, inst_id: str) -> float:
         data = self._request("GET", "/api/v5/account/positions", params={"instId": inst_id})
@@ -1505,6 +1567,7 @@ def heartbeat_loop():
     time.sleep(20)   # 시작 직후 포지션 동기화가 끝나길 잠깐 기다렸다가 첫 리포트 전송
     while True:
         try:
+            sync_transfers()
             summary = _executor.get_account_summary()
             upl = summary["unrealized_pnl"]
             with _state_lock:
