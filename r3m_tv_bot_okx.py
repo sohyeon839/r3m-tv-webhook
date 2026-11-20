@@ -65,6 +65,8 @@ BOT_EXCLUDE_SYMBOLS: set = {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
 
 LONG_ENTRY_ENABLED = True   # 롱 진입 켬 (끄려면 False)
 LONG_LEVERAGE = 3        # 롱 3배 (증거금 200 → 포지션 600)
+# 롱일 때만 증거금을 따로 (신호 이름: 증거금). 하락장이라 아트로포스 롱은 작게
+LONG_MARGIN_OVERRIDE = {"아트로포스": 100.0}
 SHORT_LEVERAGE = 3       # 숏 3배 (증거금 200 → 포지션 600)
 TAKE_PROFIT_PCT = 0.10   # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
 STOP_LOSS_PCT = 0.05     # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
@@ -885,7 +887,17 @@ def render_report_html() -> bytes:
     gain = bot_real + bot_upl
     rate = gain / STARTING_BALANCE * 100 if STARTING_BALANCE else 0
     upd = datetime.fromtimestamp(acct["t"] / 1000, KST).strftime("%H:%M") if acct else "-"
-    acct_line = (f'<div class="note">계좌 전체 잔액 {acct["eq"]:,.2f} (수동 거래·입출금 포함)</div>' if acct else '')
+    acct_line = ""
+    real_card = ""
+    if acct:
+        diff = acct["eq"] - bot_eq
+        real_card = f'''
+<section class="card realbal">
+  <div class="row"><div class="lab">🏦 OKX 실제 잔고 <span class="muted">· 수동 거래·입출금 포함</span></div></div>
+  <div class="row end"><div class="big3">{acct["eq"]:,.2f}<small class="muted"> USDT</small></div>
+    <div class="r tiny">현금 {acct["eq"] - acct["upl"]:,.2f}<br>미실현 <b class="{cls(acct["upl"])}">{fmt(acct["upl"])}</b></div></div>
+  <div class="note">자동매매 잔액과 차이 <b class="{cls(diff)}">{fmt(diff)}</b> (수동매매·입출금 등)</div>
+</section>'''
 
     hero = f'''
 <section class="hero">
@@ -900,6 +912,8 @@ def render_report_html() -> bytes:
   </div>
   {acct_line}
 </section>'''
+
+    hero += real_card
 
     # ---------- 오늘
     td = journal.get(today, {"win": 0, "be": 0, "loss": 0, "pnl": 0.0})
@@ -1038,6 +1052,7 @@ background:radial-gradient(120% 140% at 100% 0%,var(--hero2),var(--hero1));box-s
 .bar{{height:9px;background:var(--chip);border-radius:6px;overflow:hidden;margin:10px 0}} .bar.sm{{height:6px;margin:8px 0 6px}}
 .bar i{{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,var(--acc),var(--acc2))}}
 .chips{{display:flex;gap:6px;flex-wrap:wrap}} .chip{{background:var(--chip);border-radius:999px;padding:5px 10px;font-size:12.5px;font-weight:600}}
+.realbal{{padding:12px 16px}} .realbal .big3 small{{font-size:12px;font-weight:600}}
 .tiles{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:18px}}
 .tile{{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:11px 12px}} .tile .mid{{font-size:17px;margin:2px 0 4px}}
 h2{{font-size:15px;margin:20px 4px 10px;letter-spacing:-.2px}}
@@ -1411,6 +1426,8 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
         sl_pct = sl_pct * forced / leverage
         leverage = forced
     base_margin = margin if margin else MARGIN_USDT
+    if side == "L" and source in LONG_MARGIN_OVERRIDE:
+        base_margin = LONG_MARGIN_OVERRIDE[source]
     notional = SYMBOL_MARGIN_OVERRIDE.get(inst_id, base_margin) * leverage
     try:
         ref_price = _executor.get_mark_price(inst_id)
@@ -2015,8 +2032,11 @@ def sl_watch_loop():
                 hist = _executor._request("GET", "/api/v5/account/positions-history",
                                           params={"instId": inst_id, "limit": "1"})
                 rows = hist.get("data", [])
-                pnl = float(rows[0].get("pnl", 0) or 0) if rows else 0.0
-                is_win = pnl >= 0
+                gross = float(rows[0].get("pnl", 0) or 0) if rows else 0.0
+                # 실제 손익 = 수수료·펀딩비까지 반영된 realizedPnl (없으면 pnl)
+                real_raw = rows[0].get("realizedPnl") if rows else None
+                pnl = float(real_raw) if real_raw not in (None, "") else gross
+                is_win = gross >= 0      # 익절/손절 판정은 수수료 빼기 전 기준 (본절이 손절로 잡히지 않게)
 
                 with _state_lock:
                     if not is_win:
@@ -2024,7 +2044,7 @@ def sl_watch_loop():
                     win_loss = record_win_loss(is_win)
                     daily_pnl = record_daily_pnl(pnl)
                     close_kind = journal_record(inst_id, j_source, j_side, pnl,
-                                                kind=classify_close(pnl, rows[0] if rows else None))
+                                                kind=classify_close(gross, rows[0] if rows else None))
                     maybe_notify_loss_limit()
                     if source:
                         record_cum_trade(source, pnl)
