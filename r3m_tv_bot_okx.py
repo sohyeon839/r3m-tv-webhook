@@ -65,8 +65,8 @@ BOT_EXCLUDE_SYMBOLS: set = {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
 
 LONG_ENTRY_ENABLED = True   # 롱 진입 켬 (끄려면 False)
 LONG_LEVERAGE = 3        # 롱 3배 (증거금 200 → 포지션 600)
-# 롱일 때만 증거금을 따로 (신호 이름: 증거금). 하락장이라 아트로포스 롱은 작게
-LONG_MARGIN_OVERRIDE = {"아트로포스": 100.0}
+# 롱일 때만 증거금을 따로 (신호 이름: 증거금)
+LONG_MARGIN_OVERRIDE: dict = {"아트로포스": 150.0}   # 아트로포스 롱은 150 (반등 확인되면 200으로)
 SHORT_LEVERAGE = 3       # 숏 3배 (증거금 200 → 포지션 600)
 TAKE_PROFIT_PCT = 0.10   # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
 STOP_LOSS_PCT = 0.05     # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
