@@ -890,13 +890,11 @@ def render_report_html() -> bytes:
     acct_line = ""
     real_card = ""
     if acct:
-        diff = acct["eq"] - bot_eq
         real_card = f'''
 <section class="card realbal">
   <div class="row"><div class="lab">🏦 OKX 실제 잔고 <span class="muted">· 수동 거래·입출금 포함</span></div></div>
   <div class="row end"><div class="big3">{acct["eq"]:,.2f}<small class="muted"> USDT</small></div>
     <div class="r tiny">현금 {acct["eq"] - acct["upl"]:,.2f}<br>미실현 <b class="{cls(acct["upl"])}">{fmt(acct["upl"])}</b></div></div>
-  <div class="note">자동매매 잔액과 차이 <b class="{cls(diff)}">{fmt(diff)}</b> (수동매매·입출금 등)</div>
 </section>'''
 
     hero = f'''
