@@ -80,7 +80,7 @@ MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추�
 SYMBOL_MAX_STACK_OVERRIDE = {}
 # 누적 성적 집계 시작 시각 (한국시간). 이 시각 이후 봇이 진입한 거래만 집계해요.
 # 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
-STATS_START_KST = "2026-11-20 00:00"
+STATS_START_KST = "2026-11-22 00:00"
 
 # 누적 성적에서 빼버릴 신호 (기록을 지우고 합계에서도 뺌)
 STATS_EXCLUDE_SOURCES = {"클러스터"}
