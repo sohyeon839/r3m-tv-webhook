@@ -107,6 +107,8 @@ STEP_LOCK_PCT = 0.010
 MAX_DAILY_SL_COUNT = 0    # 손절 "횟수" 한도 (0 = 사용 안 함, 아래 손실 % 한도를 사용)
 # 하루(한국시간 0시 기준) 봇 실현손실이 그날 시작 잔고의 5%가 되면 신규 진입 중지, 0시 지나면 자동 재개
 MAX_DAILY_LOSS_PCT = 0.05
+# 같은 종목을 하루(한국시간 0시 기준)에 이 횟수만큼 손절하면 그 종목은 그날 신규 진입 중지 (0 = 사용 안 함)
+MAX_SYMBOL_DAILY_SL = 2
 
 # ----------------------------------------------------------------------------
 # zetro 신호 설정
@@ -472,6 +474,27 @@ def record_sl_hit() -> None:
                f"오늘 손절 {MAX_DAILY_SL_COUNT}회에 도달해서 신규 진입을 멈춥니다.\n"
                f"이미 열린 포지션은 익절/손절 그대로 유지되고,\n"
                f"내일 한국시간 0시에 자동으로 다시 시작해요.")
+
+
+def record_symbol_sl(inst_id: str) -> int:
+    """종목별 오늘 손절 횟수를 1 올리고 현재 횟수를 돌려줌."""
+    d = _daily("daily_symbol_sl", {"counts": {}})
+    d["counts"][inst_id] = d["counts"].get(inst_id, 0) + 1
+    save_state(_state)
+    cnt = d["counts"][inst_id]
+    log.warning("%s 오늘 손절 %d회째", inst_id, cnt)
+    if MAX_SYMBOL_DAILY_SL and cnt == MAX_SYMBOL_DAILY_SL:
+        notify(f"⛔ {inst_id} 오늘 진입 중지",
+               f"{inst_id} 이(가) 오늘 손절 {cnt}회에 도달해서 이 종목은 오늘 더 이상 진입하지 않아요.\n"
+               f"다른 종목은 그대로 진행되고, 내일 한국시간 0시에 다시 시작해요.")
+    return cnt
+
+
+def symbol_sl_blocked(inst_id: str) -> bool:
+    if not MAX_SYMBOL_DAILY_SL:
+        return False
+    d = _daily("daily_symbol_sl", {"counts": {}})
+    return d["counts"].get(inst_id, 0) >= MAX_SYMBOL_DAILY_SL
 
 
 def record_trade_result(success: bool) -> dict:
@@ -1390,6 +1413,9 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
         if check_daily_sl_limit():
             log.info("오늘 손실 한도 도달로 신규 진입 스킵: %s", inst_id)
             return
+        if symbol_sl_blocked(inst_id):
+            log.info("%s 오늘 손절 %d회라 이 종목 진입 스킵", inst_id, MAX_SYMBOL_DAILY_SL)
+            return
 
         max_stack = SYMBOL_MAX_STACK_OVERRIDE.get(inst_id, MAX_STACK_POSITIONS)
         positions: dict = _state.setdefault("positions", {})
@@ -2039,6 +2065,7 @@ def sl_watch_loop():
                 with _state_lock:
                     if not is_win:
                         record_sl_hit()
+                        record_symbol_sl(inst_id)
                     win_loss = record_win_loss(is_win)
                     daily_pnl = record_daily_pnl(pnl)
                     close_kind = journal_record(inst_id, j_source, j_side, pnl,
