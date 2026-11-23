@@ -1497,6 +1497,11 @@ class OkxExecutor:
         q = round(q, decimals)
         return q if q >= float(inst["minSz"]) else 0.0
 
+    def pending_tpsl(self, inst_id: str) -> list:
+        data = self._request("GET", "/api/v5/trade/orders-algo-pending",
+                             params={"instType": "SWAP", "instId": inst_id, "ordType": "conditional,oco"})
+        return data.get("data", []) or []
+
     def pending_tpsl_ids(self, inst_id: str) -> list:
         data = self._request("GET", "/api/v5/trade/orders-algo-pending",
                              params={"instType": "SWAP", "instId": inst_id, "ordType": "conditional,oco"})
@@ -1540,6 +1545,55 @@ class OkxExecutor:
 
 
 _executor: Optional[OkxExecutor] = None
+
+
+def recover_bot_positions() -> None:
+    """봇 기억(상태 파일)이 지워져서 '수동'으로 잘못 표시된 포지션을,
+    OKX에 걸린 익절·손절 주문을 보고 다시 봇 포지션으로 되찾음.
+    (BTC·ETH 같은 수동 전용 종목, 코인 아닌 종목은 제외)"""
+    try:
+        live = {p["instId"]: p for p in _executor.get_open_positions()}
+    except Exception as e:  # noqa: BLE001
+        log.warning("봇 포지션 복구: 포지션 조회 실패 %s", e)
+        return
+    with _state_lock:
+        cand = [i for i, ents in _state.get("positions", {}).items()
+                if ents and i in live and not ents[0].get("tp_px")
+                and i not in BOT_EXCLUDE_SYMBOLS]
+    for inst_id in cand:
+        if NON_CRYPTO_BLOCK and is_non_crypto(inst_id):
+            continue
+        try:
+            algos = _executor.pending_tpsl(inst_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s 익절·손절 주문 조회 실패: %s", inst_id, e)
+            continue
+        tps = [float(a["tpTriggerPx"]) for a in algos if a.get("tpTriggerPx")]
+        sls = [float(a["slTriggerPx"]) for a in algos if a.get("slTriggerPx")]
+        if not tps:
+            continue   # 익절 주문이 없으면 진짜 수동 포지션으로 봄
+        p = live[inst_id]
+        pos = float(p.get("pos", 0) or 0)
+        side = "L" if pos > 0 else "S"
+        entry = float(p.get("avgPx", 0) or 0)
+        tp = max(tps) if side == "L" else min(tps)
+        sl = (max(sls) if side == "L" else min(sls)) if sls else None
+        be = step = False
+        if sl and entry:
+            gain_at_sl = (sl - entry) / entry if side == "L" else (entry - sl) / entry
+            be = gain_at_sl >= 0
+            step = gain_at_sl >= STEP_LOCK_PCT * 0.8
+        ctime = int(p.get("cTime", 0) or 0) or int(time.time() * 1000)
+        with _state_lock:
+            ents = _state.setdefault("positions", {}).get(inst_id) or [{}]
+            e = ents[0]
+            e.update(side=side, qty=abs(pos), entry=entry, tp_px=tp, manual=False,
+                     source=e.get("source") or "복구", opened_at=e.get("opened_at") or ctime,
+                     be_done=be, partial_done=be, step_done=step or e.get("step_done", False),
+                     step_locked=step)
+            _state["positions"][inst_id] = [e]
+            save_state(_state)
+        log.info("%s 봇 포지션으로 복구 (익절 %s, 본절 %s, 수익확보 %s)", inst_id, tp, be, step)
 
 
 def sync_positions_from_exchange() -> None:
@@ -2077,6 +2131,7 @@ def heartbeat_loop():
     while True:
         try:
             sync_transfers()
+            recover_bot_positions()
             summary = _executor.get_account_summary()
             upl = summary["unrealized_pnl"]
             with _state_lock:
@@ -2379,12 +2434,18 @@ def main():
     purge_excluded_sources()
     merge_split_sources()
     sync_positions_from_exchange()
+    recover_bot_positions()
     purge_old_journal()
     seed_journal_today()
 
     log.info("상태 파일 위치: %s (%s)", STATE_FILE.resolve(),
              "Volume 사용 중 — 재배포해도 기록 유지" if os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
              else "Volume 없음 — 재배포하면 기록 초기화")
+    if not os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"):
+        notify("⚠️ 저장 공간(Volume) 없음",
+               "봇 기록이 재배포할 때마다 지워지고 있어요.\n"
+               "Railway에서 서비스에 Volume을 붙이고 위치를 /data 로 해주세요.\n"
+               "(열린 봇 포지션은 OKX 익절·손절 주문을 보고 최대한 되찾아요)")
     log.info("zetro OKX 봇 시작 | 증거금=%sUSDT 기본레버리지=%sx TP=+%.0f%% SL=-%.0f%%",
              MARGIN_USDT, LEVERAGE, TAKE_PROFIT_PCT * 100, STOP_LOSS_PCT * 100)
 
