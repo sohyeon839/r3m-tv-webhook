@@ -1061,7 +1061,7 @@ td{transition:background .8s}
 <div class="bar"><span class="menu"><span>파일</span><span>홈</span><span>삽입</span><span>수식</span><span>데이터</span><span>보기</span></span></div>
 <div class="fx"><div class="nm" id="nm">A1</div><div class="ic">fx</div><div class="val" id="fxv">=SUM(B7:B30)</div></div>
 <div class="grid"><table id="t">
-<colgroup><col style="width:36px"><col style="width:96px"><col style="width:84px"><col style="width:76px"><col style="width:72px"><col style="width:66px"><col style="width:52px"><col style="width:92px"><col style="width:84px"><col style="width:84px"><col style="width:84px"><col style="width:84px"><col style="width:72px"><col style="width:110px"></colgroup>
+<colgroup><col style="width:36px"><col style="width:126px"><col style="width:96px"><col style="width:76px"><col style="width:72px"><col style="width:66px"><col style="width:52px"><col style="width:92px"><col style="width:84px"><col style="width:84px"><col style="width:84px"><col style="width:84px"><col style="width:72px"><col style="width:110px"></colgroup>
 <thead><tr><th class="rn"></th><th>A</th><th>B</th><th>C</th><th>D</th><th>E</th><th>F</th><th>G</th><th>H</th><th>I</th><th>J</th><th>K</th><th>L</th><th>M</th></tr></thead>
 <tbody id="tb"></tbody></table></div>
 <div class="tabs"><a class="on" href="#">Sheet1</a><a href="REPORT_URL">Sheet2</a><span class="st" id="st">준비</span></div>
@@ -1077,12 +1077,12 @@ function td(v,c=""){return `<td class="${c}">${v}</td>`}
 function render(d){
   const r=[];let i=1;
   const E8=Array(11).fill(td(""));
-  r.push(row(i++,[td("미실현 합계","lbl c1"),td(sgn(d.upl_total),"n"+ng(d.upl_total)),...E8]));
-  r.push(row(i++,[td("자동매매","lbl c1"),td(sgn(d.upl_bot),"n"+ng(d.upl_bot)),...E8]));
-  r.push(row(i++,[td("잔고","lbl c1"),td(d.eq==null?"":num(d.eq),"n"),...E8]));
+  r.push(row(i++,[td("미실현 합계(USDT)","lbl c1"),td(sgn(d.upl_total),"n"+ng(d.upl_total)),...E8]));
+  r.push(row(i++,[td("자동매매(USDT)","lbl c1"),td(sgn(d.upl_bot),"n"+ng(d.upl_bot)),...E8]));
+  r.push(row(i++,[td("잔고(USDT)","lbl c1"),td(d.eq==null?"":num(d.eq),"n"),...E8]));
   r.push(row(i++,[td("건수","lbl c1"),td(String(d.items.length),"n"),...E8]));
   r.push(row(i++,Array(13).fill(td(""))));
-  r.push(row(i++,["종목","미실현","수익률(%)","가격변동(%)","익절진행(%)","구분","출처","진입가","현재가","익절가","손절가","증거금","상태"].map((h,k)=>td(h,(k?"":"c1 ")+"c")),"h"));
+  r.push(row(i++,["종목","미실현(USDT)","수익률(%)","가격변동(%)","익절진행(%)","구분","출처","진입가","현재가","익절가","손절가","증거금","상태"].map((h,k)=>td(h,(k?"":"c1 ")+"c")),"h"));
   d.items.forEach(p=>{
     let prog="";
     if(p.tp&&p.avg&&p.mark){const m=p.side==="L"?(p.mark-p.avg):(p.avg-p.mark);prog=(m/Math.abs(p.tp-p.avg)*100).toFixed(0);}
