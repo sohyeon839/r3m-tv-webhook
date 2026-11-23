@@ -107,7 +107,7 @@ MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추�
 SYMBOL_MAX_STACK_OVERRIDE = {}
 # 누적 성적 집계 시작 시각 (한국시간). 이 시각 이후 봇이 진입한 거래만 집계해요.
 # 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
-STATS_START_KST = "2026-11-22 00:00"
+STATS_START_KST = "2026-11-24 00:00"   # 11/24 0시부터 누적 성적 새로 시작
 
 # 누적 성적에서 빼버릴 신호 (기록을 지우고 합계에서도 뺌)
 STATS_EXCLUDE_SOURCES = {"클러스터"}
@@ -778,9 +778,9 @@ def sync_transfers() -> None:
 # 지난 날짜를 OKX 거래 내역으로 다시 계산해서 기록지에 채움 (한 번만 실행)
 BACKFILL_DATES: list = []   # 지난 날짜 다시 계산 안 함
 
-# 이 날짜 이전 기록지·거래 기록은 지움 (11/20부터 새로 기록)
-JOURNAL_START = "2026-11-20"
-STARTING_BALANCE = 1330.0   # 기록 시작할 때 잔고 (기록지 맨 위에 표시)
+# 이 날짜 이전 기록지·거래 기록은 지움 (11/24부터 새로 기록, 자동매매만 1000으로 다시 시작)
+JOURNAL_START = "2026-11-24"
+STARTING_BALANCE = 1000.0   # 기록 시작할 때 잔고 (기록지 맨 위에 표시)
 
 
 def purge_old_journal() -> None:
@@ -882,7 +882,7 @@ def format_day_summary(date: str) -> str:
     if WEEKLY_TARGET_USD:
         dt = datetime.strptime(date, "%Y-%m-%d")
         ws = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
-        wsum = sum(v.get("pnl", 0.0) for d, v in _state.get("journal", {}).items() if ws <= d <= date)
+        wsum = sum(v.get("pnl", 0.0) for d, v in _state.get("journal", {}).items() if max(ws, JOURNAL_START) <= d <= date)
         lines.append(f"📅 이번 주 {wsum:+.2f} / 목표 {WEEKLY_TARGET_USD:.0f} ({wsum / WEEKLY_TARGET_USD * 100:.0f}%)")
     dep, wd = day.get("dep", 0.0), day.get("wd", 0.0)
     if dep or wd:
@@ -1146,8 +1146,10 @@ tick();setInterval(tick,3000);
 
 def render_report_html() -> bytes:
     with _state_lock:
-        journal = json.loads(json.dumps(_state.get("journal", {})))
-        trades = list(_state.get("trade_log", []))[-40:]
+        journal = {k: v for k, v in json.loads(json.dumps(_state.get("journal", {}))).items()
+                   if k >= JOURNAL_START}
+        _js_ms = int(datetime.strptime(JOURNAL_START, "%Y-%m-%d").replace(tzinfo=KST).timestamp() * 1000)
+        trades = [t for t in _state.get("trade_log", []) if t.get("t", 0) >= _js_ms][-40:]
         acct = dict(_state.get("last_account") or {})
     esc = html.escape
     days = sorted(journal.items(), reverse=True)
