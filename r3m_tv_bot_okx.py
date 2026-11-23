@@ -335,6 +335,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("zetro_okx_bot")
 
 
+# 봇이 거는 익절·손절 주문에 붙이는 이름표 (수동으로 건 주문과 구분하려고)
+BOT_ALGO_PREFIX = "zbot"
+
+
+def bot_algo_id() -> str:
+    return f"{BOT_ALGO_PREFIX}{int(time.time() * 1000)}{threading.get_ident() % 1000:03d}"[:32]
+
+
+def is_bot_algo(a: dict) -> bool:
+    cid = str(a.get("algoClOrdId") or a.get("attachAlgoClOrdId") or "")
+    return cid.startswith(BOT_ALGO_PREFIX)
+
+
 class OkxApiError(RuntimeError):
     def __init__(self, data: dict):
         self.data = data
@@ -1478,6 +1491,7 @@ class OkxExecutor:
             "ordType": "market",
             "sz": str(qty),
             "attachAlgoOrds": [{
+                "attachAlgoClOrdId": bot_algo_id(),
                 "tpTriggerPx": str(round(tp_price, 6)),
                 "tpOrdPx": "-1",
                 "slTriggerPx": str(round(sl_price, 6)),
@@ -1557,6 +1571,7 @@ class OkxExecutor:
             "tdMode": TD_MODE,
             "side": "buy" if side == "S" else "sell",
             "ordType": "oco",
+            "algoClOrdId": bot_algo_id(),
             "closeFraction": "1",
             "reduceOnly": True,
             "tpTriggerPx": self.round_px(inst_id, tp_px),
@@ -1594,8 +1609,8 @@ def recover_bot_positions() -> None:
         return
     with _state_lock:
         cand = [i for i, ents in _state.get("positions", {}).items()
-                if ents and i in live and not ents[0].get("tp_px")
-                and i not in BOT_EXCLUDE_SYMBOLS]
+                if ents and i in live and i not in BOT_EXCLUDE_SYMBOLS
+                and (not ents[0].get("tp_px") or ents[0].get("source") == "복구")]
     for inst_id in cand:
         if NON_CRYPTO_BLOCK and is_non_crypto(inst_id):
             continue
@@ -1604,10 +1619,20 @@ def recover_bot_positions() -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("%s 익절·손절 주문 조회 실패: %s", inst_id, e)
             continue
-        tps = [float(a["tpTriggerPx"]) for a in algos if a.get("tpTriggerPx")]
-        sls = [float(a["slTriggerPx"]) for a in algos if a.get("slTriggerPx")]
+        bot_algos = [a for a in algos if is_bot_algo(a)]
+        if not bot_algos:
+            # 봇 이름표가 붙은 주문이 없으면 수동 포지션 → 봇이 절대 건드리지 않음
+            with _state_lock:
+                ents = _state.get("positions", {}).get(inst_id) or []
+                if ents and ents[0].get("source") == "복구":
+                    ents[0].update(manual=True, tp_px=None, source=None)
+                    save_state(_state)
+                    log.info("%s 수동 포지션으로 되돌림 (봇 주문 아님)", inst_id)
+            continue
+        tps = [float(a["tpTriggerPx"]) for a in bot_algos if a.get("tpTriggerPx")]
+        sls = [float(a["slTriggerPx"]) for a in bot_algos if a.get("slTriggerPx")]
         if not tps:
-            continue   # 익절 주문이 없으면 진짜 수동 포지션으로 봄
+            continue
         p = live[inst_id]
         pos = float(p.get("pos", 0) or 0)
         side = "L" if pos > 0 else "S"
