@@ -1069,7 +1069,7 @@ td{transition:background .8s}
 const DATA_URL="DATA_PATH";
 let last=0, prev={};
 const num=(v,d=2)=>v==null?"":(v<0?"-":"")+Math.abs(Number(v)).toLocaleString("ko-KR",{minimumFractionDigits:d,maximumFractionDigits:d});
-const sgn=(v,d=2)=>v==null?"":(v>0?"":"")+num(v,d);
+const sgn=(v,d=2)=>v==null?"":(v>0?"+":"")+num(v,d);
 const px=v=>v==null?"":(Math.abs(v)>=100?num(v,2):String(Number(Number(v).toPrecision(5))));
 const ng=v=>v<0?" neg":"";
 function row(i,cells,cls=""){return `<tr class="${cls}"><td class="rn">${i}</td>${cells.join("")}</tr>`}
