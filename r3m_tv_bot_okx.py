@@ -63,6 +63,33 @@ LEVERAGE = 3             # 기본 레버리지 (신호별로 아래 규칙에서
 # 봇이 절대 안 들어가는 종목 (직접 거래하는 종목). 예: {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
 BOT_EXCLUDE_SYMBOLS: set = {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
 
+# 코인이 아닌 종목(주식·ETF·원자재·외환 선물)은 봇이 안 들어감
+# 장 시간·주말에 가격이 건너뛰어서 손절이 제대로 안 걸릴 수 있기 때문
+NON_CRYPTO_BLOCK = True
+NON_CRYPTO_TICKERS = {
+    # 미국 주식·ETF
+    "SOXL", "SOXS", "TQQQ", "SQQQ", "SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "USO", "TLT", "UVXY", "VIX",
+    "TSLA", "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "GOOG", "META", "NFLX", "AMD", "INTC", "AVGO", "ORCL",
+    "MU", "SMCI", "PLTR", "COIN", "MSTR", "HOOD", "CRCL", "BABA", "TSM", "ARM", "ASML", "IBM", "UBER",
+    "SHOP", "SNOW", "RBLX", "GME", "AMC", "NVDL", "TSLL", "CONL", "MSTU", "MSTX", "LABU", "TNA", "FAS",
+    # 원자재·외환
+    "XAU", "XAG", "XPT", "XPD", "WTI", "BRENT", "NATGAS", "COPPER", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF",
+}
+
+
+def is_non_crypto(inst_id: str) -> bool:
+    base = inst_id.split("-")[0].upper()
+    if base in NON_CRYPTO_TICKERS:
+        return True
+    try:
+        info = _executor.get_instrument(inst_id)
+        cat = str(info.get("instCategory", "") or "")
+        if cat and cat != "1":      # OKX가 코인이 아닌 종목으로 표시한 경우
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
 LONG_ENTRY_ENABLED = True   # 롱 진입 켬 (끄려면 False)
 LONG_LEVERAGE = 3        # 롱 3배 (증거금 200 → 포지션 600)
 # 롱일 때만 증거금을 따로 (신호 이름: 증거금)
@@ -133,6 +160,7 @@ ZETRO_HOOK_PATH = "/zetro-hook/5472118043e07db5"
 
 # 매매 기록지 페이지 주소 (폰 브라우저로 열기). 뒤 글자는 비밀번호 역할이라 공유하지 마세요.
 REPORT_PATH = "/report/5472118043e07db5"
+POSITIONS_PATH = "/positions/5472118043e07db5"   # 실시간 포지션 페이지
 DAILY_TARGET_USD = 100.0   # 기록지에 표시할 하루 목표 수익
 
 # ----------------------------------------------------------------------------
@@ -885,6 +913,182 @@ def daily_close_loop():
         time.sleep(60)
 
 
+# ----------------------------------------------------------------------------
+# 실시간 포지션 페이지
+# ----------------------------------------------------------------------------
+
+_pos_cache = {"t": 0.0, "data": None}
+_pos_cache_lock = threading.Lock()
+_acct_cache = {"t": 0.0, "data": None}
+
+
+def positions_snapshot() -> dict:
+    """OKX 포지션을 2초 캐시해서 돌려줌 (여러 화면에서 열어도 OKX 호출이 몰리지 않게)."""
+    now = time.time()
+    with _pos_cache_lock:
+        if _pos_cache["data"] is not None and now - _pos_cache["t"] < 2.0:
+            return _pos_cache["data"]
+    raw = _executor.get_open_positions()
+    acct = None
+    with _pos_cache_lock:
+        if _acct_cache["data"] is not None and now - _acct_cache["t"] < 10.0:
+            acct = _acct_cache["data"]
+    if acct is None:
+        try:
+            acct = _executor.get_account_summary()
+            with _pos_cache_lock:
+                _acct_cache.update(t=now, data=acct)
+        except Exception:  # noqa: BLE001
+            acct = None
+    with _state_lock:
+        st_pos = json.loads(json.dumps(_state.get("positions", {})))
+
+    def f(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+
+    items = []
+    for p in raw:
+        inst = p.get("instId", "")
+        pos = f(p.get("pos")) or 0.0
+        ents = st_pos.get(inst) or []
+        e = ents[0] if ents else {}
+        is_bot = bool(e.get("tp_px")) and not e.get("manual")
+        items.append({
+            "inst": inst.replace("-USDT-SWAP", ""),
+            "side": "L" if pos > 0 else "S",
+            "sz": abs(pos),
+            "avg": f(p.get("avgPx")),
+            "mark": f(p.get("markPx")) or f(p.get("last")),
+            "upl": f(p.get("upl")) or 0.0,
+            "roe": (f(p.get("uplRatio")) or 0.0) * 100,
+            "lever": f(p.get("lever")),
+            "liq": f(p.get("liqPx")),
+            "margin": f(p.get("imr")) or f(p.get("margin")),
+            "notional": f(p.get("notionalUsd")),
+            "bot": is_bot,
+            "src": e.get("source") if is_bot else "수동",
+            "tp": e.get("tp_px") if is_bot else None,
+            "be": bool(e.get("be_done")),
+            "partial": bool(e.get("partial_done")),
+            "step": bool(e.get("step_locked")),
+            "step_ok": bool(is_bot and e.get("tp_px") and f(p.get("avgPx"))
+                            and abs(e["tp_px"] - f(p.get("avgPx"))) / f(p.get("avgPx")) > STEP_TRIGGER_PCT + 0.002),
+            "opened": e.get("opened_at"),
+        })
+    items.sort(key=lambda x: -abs(x["upl"]))
+    data = {
+        "t": int(now * 1000),
+        "items": items,
+        "upl_total": round(sum(x["upl"] for x in items), 2),
+        "upl_bot": round(sum(x["upl"] for x in items if x["bot"]), 2),
+        "eq": acct["usdt_balance"] if acct else None,
+    }
+    with _pos_cache_lock:
+        _pos_cache.update(t=now, data=data)
+    return data
+
+
+def render_positions_html() -> bytes:
+    page = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#ffffff"><title>통합 문서1</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:#222;font:13px/1.3 "Malgun Gothic","맑은 고딕","Apple SD Gothic Neo","Segoe UI",sans-serif}
+.bar{display:flex;align-items:center;gap:14px;padding:6px 10px;background:#f3f3f3;border-bottom:1px solid #d6d6d6;font-size:12px;color:#444;white-space:nowrap;overflow:hidden}
+.bar b{font-weight:600;color:#222}
+.menu span{margin-right:14px}
+.fx{display:flex;align-items:center;border-bottom:1px solid #d6d6d6;font-size:12px;height:26px}
+.fx .nm{width:64px;border-right:1px solid #d6d6d6;height:100%;display:flex;align-items:center;justify-content:center;color:#333}
+.fx .ic{padding:0 8px;color:#888;font-style:italic;border-right:1px solid #e3e3e3;height:100%;display:flex;align-items:center}
+.fx .val{padding:0 8px;color:#222;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.grid{overflow:auto;-webkit-overflow-scrolling:touch;height:calc(100vh - 26px - 31px - 30px)}
+table{border-collapse:collapse;table-layout:fixed;font-variant-numeric:tabular-nums}
+th,td{border:1px solid #e1e1e1;height:22px;padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+thead th{background:#f3f3f3;color:#555;font-weight:400;text-align:center;position:sticky;top:0;z-index:2;border-color:#d6d6d6}
+td.rn,th.rn{background:#f3f3f3;color:#555;text-align:center;width:36px;position:sticky;left:0;z-index:1;border-color:#d6d6d6}
+thead th.rn{z-index:3}
+td.c1{position:sticky;left:36px;background:#fff;z-index:1}
+.n{text-align:right} .c{text-align:center}
+.neg{color:#c00000}
+.h td{background:#f7f7f7;font-weight:600}
+.lbl{color:#555}
+.sel{outline:2px solid #217346;outline-offset:-2px}
+.up{background:#e2efda!important;transition:background .1s} .dn{background:#fce4e4!important;transition:background .1s}
+td{transition:background .8s}
+.tabs{position:fixed;left:0;right:0;bottom:0;height:30px;background:#f3f3f3;border-top:1px solid #d6d6d6;display:flex;align-items:flex-end;padding-left:44px;font-size:12px}
+.tabs a{padding:5px 14px;color:#444;text-decoration:none;border-right:1px solid #d6d6d6}
+.tabs a.on{background:#fff;color:#217346;font-weight:600;border-bottom:2px solid #217346}
+.st{margin-left:auto;padding:5px 10px;color:#777}
+</style></head><body>
+<div class="bar"><span class="menu"><span>파일</span><span>홈</span><span>삽입</span><span>수식</span><span>데이터</span><span>보기</span></span></div>
+<div class="fx"><div class="nm" id="nm">A1</div><div class="ic">fx</div><div class="val" id="fxv">=SUM(B7:B30)</div></div>
+<div class="grid"><table id="t">
+<colgroup><col style="width:36px"><col style="width:96px"><col style="width:84px"><col style="width:76px"><col style="width:52px"><col style="width:92px"><col style="width:84px"><col style="width:84px"><col style="width:72px"><col style="width:66px"><col style="width:120px"></colgroup>
+<thead><tr><th class="rn"></th><th>A</th><th>B</th><th>C</th><th>D</th><th>E</th><th>F</th><th>G</th><th>H</th><th>I</th><th>J</th></tr></thead>
+<tbody id="tb"></tbody></table></div>
+<div class="tabs"><a class="on" href="#">Sheet1</a><a href="REPORT_URL">Sheet2</a><span class="st" id="st">준비</span></div>
+<script>
+const DATA_URL="DATA_PATH";
+let last=0, prev={};
+const num=(v,d=2)=>v==null?"":(v<0?"-":"")+Math.abs(Number(v)).toLocaleString("ko-KR",{minimumFractionDigits:d,maximumFractionDigits:d});
+const sgn=(v,d=2)=>v==null?"":(v>0?"":"")+num(v,d);
+const px=v=>v==null?"":(Math.abs(v)>=100?num(v,2):String(Number(Number(v).toPrecision(5))));
+const ng=v=>v<0?" neg":"";
+function row(i,cells,cls=""){return `<tr class="${cls}"><td class="rn">${i}</td>${cells.join("")}</tr>`}
+function td(v,c=""){return `<td class="${c}">${v}</td>`}
+function render(d){
+  const r=[];let i=1;
+  const E8=Array(8).fill(td(""));
+  r.push(row(i++,[td("미실현 합계","lbl c1"),td(sgn(d.upl_total),"n"+ng(d.upl_total)),...E8]));
+  r.push(row(i++,[td("자동매매","lbl c1"),td(sgn(d.upl_bot),"n"+ng(d.upl_bot)),...E8]));
+  r.push(row(i++,[td("잔고","lbl c1"),td(d.eq==null?"":num(d.eq),"n"),...E8]));
+  r.push(row(i++,[td("건수","lbl c1"),td(String(d.items.length),"n"),...E8]));
+  r.push(row(i++,Array(10).fill(td(""))));
+  r.push(row(i++,["종목","미실현","수익률(%)","구분","출처","진입가","현재가","증거금","진행(%)","상태"].map((h,k)=>td(h,(k?"":"c1 ")+"c")),"h"));
+  d.items.forEach(p=>{
+    let prog="";
+    if(p.bot&&p.tp&&p.avg&&p.mark){const m=p.side==="L"?(p.mark-p.avg):(p.avg-p.mark);prog=(m/Math.abs(p.tp-p.avg)*100).toFixed(0);}
+    const stt=p.bot?[p.be?"본절":"",p.partial?"분할":"",p.step?"확보":""].filter(Boolean).join("/"):"";
+    r.push(row(i++,[
+      td(p.inst,"c1"),
+      `<td class="n${ng(p.upl)}" data-k="${p.inst}">${sgn(p.upl)}</td>`,
+      td(sgn(p.roe),"n"+ng(p.roe)),
+      td(p.side==="L"?"매수":"매도","c"),td(p.bot?(p.src||"자동"):"수동","c"),
+      td(px(p.avg),"n"),td(px(p.mark),"n"),td(p.margin==null?"":num(p.margin,1),"n"),
+      td(prog,"n"+ng(Number(prog)||0)),td(stt,"c")
+    ]));
+  });
+  while(i<30){r.push(row(i++,Array(10).fill(td(""))));}
+  document.getElementById("tb").innerHTML=r.join("");
+  document.querySelectorAll("td[data-k]").forEach(el=>{
+    const k=el.dataset.k, v=d.items.find(x=>x.inst===k).upl;
+    if(prev[k]!==undefined&&prev[k]!==v){el.classList.add(v>prev[k]?"up":"dn");setTimeout(()=>el.classList.remove("up","dn"),600);}
+    prev[k]=v;
+  });
+}
+async function tick(){
+  try{const r=await fetch(DATA_URL,{cache:"no-store"});if(!r.ok)throw 0;const d=await r.json();last=d.t;render(d);}
+  catch(e){document.getElementById("st").textContent="연결 끊김";}
+}
+setInterval(()=>{const s=last?Math.round((Date.now()-last)/1000):null;document.getElementById("st").textContent=s==null?"준비":(s<=5?"준비":"계산 중... ("+s+"초)");},1000);
+document.getElementById("tb").addEventListener("click",e=>{
+  const c=e.target.closest("td");if(!c||c.classList.contains("rn"))return;
+  document.querySelectorAll(".sel").forEach(x=>x.classList.remove("sel"));c.classList.add("sel");
+  const tr=c.parentElement,ci=[...tr.children].indexOf(c),ri=tr.firstElementChild.textContent;
+  document.getElementById("nm").textContent=String.fromCharCode(64+ci)+ri;
+  document.getElementById("fxv").textContent=c.textContent;
+});
+tick();setInterval(tick,3000);
+</script></body></html>"""
+    page = (page.replace("DATA_PATH", POSITIONS_PATH + "/data")
+                .replace("REPORT_URL", REPORT_PATH))
+    return page.encode("utf-8")
+
+
 def render_report_html() -> bytes:
     with _state_lock:
         journal = json.loads(json.dumps(_state.get("journal", {})))
@@ -1106,7 +1310,7 @@ h2{{font-size:15px;margin:20px 4px 10px;letter-spacing:-.2px}}
 .tp{{font-weight:800;text-align:right}} .empty{{color:var(--muted);text-align:center;padding:18px}}
 footer{{text-align:center;font-size:11px;color:var(--muted);margin-top:18px}}
 </style></head><body><div class="wrap">
-<header><h1>📒 매매 기록지</h1><span class="tiny">1분마다 새로고침</span></header>
+<header><h1>📒 매매 기록지</h1><a class="tiny" style="color:var(--acc);font-weight:700;text-decoration:none" href="{POSITIONS_PATH}">⚡ 실시간 포지션 →</a></header>
 {hero}
 {today_html}
 <div class="tiles">{tiles}</div>
@@ -1387,6 +1591,9 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
     side = "S" if side_raw == "short" else "L"
     if side == "L" and not LONG_ENTRY_ENABLED:
         log.info("롱 진입 꺼짐 — %s %s 롱 신호 무시", source, inst_id)
+        return
+    if NON_CRYPTO_BLOCK and is_non_crypto(inst_id):
+        log.info("%s 은 코인이 아닌 종목(주식·ETF 등)이라 봇 진입 안 함", inst_id)
         return
     if inst_id in BOT_EXCLUDE_SYMBOLS:
         log.info("%s 은 수동 전용 종목이라 봇 진입 안 함", inst_id)
@@ -2007,6 +2214,7 @@ def manage_positions_loop():
                         _executor.replace_tpsl(inst_id, side, e["tp_px"], lock_px)
                         with _state_lock:
                             e["step_done"] = True
+                            e["step_locked"] = True
                             e["be_done"] = True
                             save_state(_state)
                         log.info("%s 단계 손절: 손절 → %s (현재 +%.2f%%)", inst_id, lock_px, gain * 100)
@@ -2128,7 +2336,19 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path_only = self.path.split("?", 1)[0].rstrip("/")
-        if path_only == REPORT_PATH:
+        if path_only == POSITIONS_PATH:
+            body, ctype = render_positions_html(), "text/html; charset=utf-8"
+        elif path_only == POSITIONS_PATH + "/data":
+            try:
+                body = json.dumps(positions_snapshot(), ensure_ascii=False).encode("utf-8")
+                ctype = "application/json; charset=utf-8"
+            except Exception as e:  # noqa: BLE001
+                log.warning("실시간 포지션 조회 오류: %s", e)
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+        elif path_only == REPORT_PATH:
             try:
                 body = render_report_html()
                 ctype = "text/html; charset=utf-8"
@@ -2173,6 +2393,7 @@ def main():
     threading.Thread(target=manage_positions_loop, daemon=True).start()
     threading.Thread(target=daily_close_loop, daemon=True).start()
     log.info("매매 기록지: %s", report_url())
+    log.info("실시간 포지션: %s", report_url().replace(REPORT_PATH, POSITIONS_PATH))
     if ZETRO_API_KEY:
         threading.Thread(target=zetro_poll_loop, daemon=True).start()
         threading.Thread(target=screener_poll_loop, daemon=True).start()
