@@ -161,7 +161,8 @@ ZETRO_HOOK_PATH = "/zetro-hook/5472118043e07db5"
 # 매매 기록지 페이지 주소 (폰 브라우저로 열기). 뒤 글자는 비밀번호 역할이라 공유하지 마세요.
 REPORT_PATH = "/report/5472118043e07db5"
 POSITIONS_PATH = "/positions/5472118043e07db5"   # 실시간 포지션 페이지
-DAILY_TARGET_USD = 100.0   # 기록지에 표시할 하루 목표 수익
+WEEKLY_TARGET_USD = 200.0                       # 일주일 목표 수익 (월요일 0시 ~ 일요일)
+DAILY_TARGET_USD = round(WEEKLY_TARGET_USD / 7, 1)  # 하루 목표 (약 28.6)
 
 # ----------------------------------------------------------------------------
 # zetro 웹훅 진입 규칙 (zetro 알림 만들기에서 거래대금·위험/주의 코인 등 필터를 걸어둔 알림만 옴)
@@ -876,8 +877,13 @@ def format_day_summary(date: str) -> str:
         f"➖ 본절 {day['be']}회",
         f"🛑 손절 {day['loss']}회",
         f"💵 실현손익: {day['pnl']:+.2f} USDT",
-        f"🎯 목표 {DAILY_TARGET_USD:.0f} 대비 {pct:.0f}%",
+        f"🎯 하루 목표 {DAILY_TARGET_USD:g} 대비 {pct:.0f}%",
     ]
+    if WEEKLY_TARGET_USD:
+        dt = datetime.strptime(date, "%Y-%m-%d")
+        ws = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+        wsum = sum(v.get("pnl", 0.0) for d, v in _state.get("journal", {}).items() if ws <= d <= date)
+        lines.append(f"📅 이번 주 {wsum:+.2f} / 목표 {WEEKLY_TARGET_USD:.0f} ({wsum / WEEKLY_TARGET_USD * 100:.0f}%)")
     dep, wd = day.get("dep", 0.0), day.get("wd", 0.0)
     if dep or wd:
         lines.append(f"🏦 입출금: 입금 +{dep:.2f} / 출금 {wd:.2f} → 합계 {dep + wd:+.2f}")
@@ -1197,7 +1203,7 @@ def render_report_html() -> bytes:
     today_html = f'''
 <section class="card today">
   <div class="row"><div class="lab">오늘 · {now.month}/{now.day}({WD[now.weekday()]})</div>
-    <div class="lab">목표 {DAILY_TARGET_USD:.0f}</div></div>
+    <div class="lab">하루 목표 {DAILY_TARGET_USD:g}</div></div>
   <div class="row end"><div class="big2 {cls(td["pnl"])}">{fmt(td["pnl"])}<small> USDT</small></div>
     <div class="pct">{tpct:.0f}%</div></div>
   <div class="bar"><i style="width:{max(0, min(100, tpct)):.0f}%"></i></div>
@@ -1225,8 +1231,13 @@ def render_report_html() -> bytes:
         n = t["win"] + t["be"] + t["loss"]
         avg = t["pnl"] / t["days"] if t["days"] else 0
         wr = (t["win"] + t["be"]) / n * 100 if n else 0
+        wk = ""
+        if title == "이번 주" and WEEKLY_TARGET_USD:
+            wp = t["pnl"] / WEEKLY_TARGET_USD * 100
+            wk = (f'<div class="bar sm" style="margin:6px 0 2px"><i style="width:{max(0, min(100, wp)):.0f}%"></i></div>'
+                  f'<div class="tiny">목표 {WEEKLY_TARGET_USD:.0f} 중 <b>{wp:.0f}%</b></div>')
         tiles += (f'<div class="tile"><div class="lab">{title}</div>'
-                  f'<div class="mid {cls(t["pnl"])}">{fmt(t["pnl"], 1)}</div>'
+                  f'<div class="mid {cls(t["pnl"])}">{fmt(t["pnl"], 1)}</div>{wk}'
                   f'<div class="tiny">{t["days"]}일 · {n}번<br>하루 {fmt(avg, 1)}<br>승률 {wr:.0f}%</div></div>')
 
     # ---------- 일별 (표)
