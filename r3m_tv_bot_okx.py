@@ -91,10 +91,10 @@ def is_non_crypto(inst_id: str) -> bool:
     return False
 
 LONG_ENTRY_ENABLED = True   # 롱 진입 켬 (끄려면 False)
-LONG_LEVERAGE = 3        # 롱 3배 (증거금 200 → 포지션 600)
+LONG_LEVERAGE = 5        # 롱 5배 (증거금 200 → 포지션 1,000 / 아트로포스 롱 150 → 750)
 # 롱일 때만 증거금을 따로 (신호 이름: 증거금)
 LONG_MARGIN_OVERRIDE: dict = {"아트로포스": 150.0}   # 아트로포스 롱은 150 (반등 확인되면 200으로)
-SHORT_LEVERAGE = 3       # 숏 3배 (증거금 200 → 포지션 600)
+SHORT_LEVERAGE = 5       # 숏 5배 (증거금 200 → 포지션 1,000)
 TAKE_PROFIT_PCT = 0.10   # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
 STOP_LOSS_PCT = 0.05     # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
 
@@ -161,8 +161,8 @@ ZETRO_HOOK_PATH = "/zetro-hook/5472118043e07db5"
 # 매매 기록지 페이지 주소 (폰 브라우저로 열기). 뒤 글자는 비밀번호 역할이라 공유하지 마세요.
 REPORT_PATH = "/report/5472118043e07db5"
 POSITIONS_PATH = "/positions/5472118043e07db5"   # 실시간 포지션 페이지
-WEEKLY_TARGET_USD = 200.0                       # 일주일 목표 수익 (월요일 0시 ~ 일요일)
-DAILY_TARGET_USD = round(WEEKLY_TARGET_USD / 7, 1)  # 하루 목표 (약 28.6)
+WEEKLY_TARGET_USD = 350.0                       # 일주일 목표 수익 (월요일 0시 ~ 일요일) = 하루 50
+DAILY_TARGET_USD = round(WEEKLY_TARGET_USD / 7, 1)  # 하루 목표 (50)
 
 # ----------------------------------------------------------------------------
 # zetro 웹훅 진입 규칙 (zetro 알림 만들기에서 거래대금·위험/주의 코인 등 필터를 걸어둔 알림만 옴)
@@ -193,7 +193,7 @@ SCREENER_RULES = {
         "tf": "5m",
         "symbols": None,            # 전 종목
         "max_age_sec": 60,          # 뜬 지 1분 이내만
-        "margin": 200,              # 증거금 200 USDT (× 3배 = 포지션 600)
+        "margin": 200,              # 증거금 200 USDT (규칙은 3배 기준, 실제는 5배로 → 포지션 1,000, 가격 기준 익절·손절 거리는 그대로)
         "leverage": 3,
         "tp_pct": 0.06,             # 증거금 대비 +6% 익절 (3배 → 가격 +2.0%) — 스크리너 최대수익 분석 반영
         "sl_pct": 0.05,             # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
@@ -206,7 +206,7 @@ SCREENER_RULES = {
         "tf": "5m",
         "symbols": None,            # 전 종목
         "max_age_sec": 180,         # 뜬 지 3분 이내만
-        "margin": 200,              # 증거금 200 USDT (× 3배 = 포지션 600)
+        "margin": 200,              # 증거금 200 USDT (규칙은 3배 기준, 실제는 5배로 → 포지션 1,000, 가격 기준 익절·손절 거리는 그대로)
         "leverage": 3,
         "tp_pct": 0.10,             # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
         "sl_pct": 0.05,             # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
