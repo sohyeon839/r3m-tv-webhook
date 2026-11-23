@@ -920,6 +920,28 @@ def daily_close_loop():
 _pos_cache = {"t": 0.0, "data": None}
 _pos_cache_lock = threading.Lock()
 _acct_cache = {"t": 0.0, "data": None}
+_algo_cache: dict = {}   # inst_id -> (time, tp, sl)
+
+
+def _tpsl_of(inst_id: str, side: str) -> tuple:
+    """OKX에 걸려 있는 익절가·손절가 (수동으로 건 것 포함). 15초 캐시."""
+    now = time.time()
+    c = _algo_cache.get(inst_id)
+    if c and now - c[0] < 15:
+        return c[1], c[2]
+    tp = sl = None
+    try:
+        algos = _executor.pending_tpsl(inst_id)
+        tps = [float(a["tpTriggerPx"]) for a in algos if a.get("tpTriggerPx")]
+        sls = [float(a["slTriggerPx"]) for a in algos if a.get("slTriggerPx")]
+        if tps:
+            tp = max(tps) if side == "L" else min(tps)
+        if sls:
+            sl = max(sls) if side == "L" else min(sls)
+    except Exception:  # noqa: BLE001
+        pass
+    _algo_cache[inst_id] = (now, tp, sl)
+    return tp, sl
 
 
 def positions_snapshot() -> dict:
@@ -970,7 +992,8 @@ def positions_snapshot() -> dict:
             "notional": f(p.get("notionalUsd")),
             "bot": is_bot,
             "src": e.get("source") if is_bot else "수동",
-            "tp": e.get("tp_px") if is_bot else None,
+            "tp": None,
+            "sl": None,
             "be": bool(e.get("be_done")),
             "partial": bool(e.get("partial_done")),
             "step": bool(e.get("step_locked")),
@@ -978,6 +1001,17 @@ def positions_snapshot() -> dict:
                             and abs(e["tp_px"] - f(p.get("avgPx"))) / f(p.get("avgPx")) > STEP_TRIGGER_PCT + 0.002),
             "opened": e.get("opened_at"),
         })
+    # 익절가·손절가: OKX에 걸린 주문 기준 (봇·수동 모두). 봇은 기억한 익절가를 우선
+    for it, p in zip(items, raw):
+        okx_tp, okx_sl = _tpsl_of(p.get("instId", ""), it["side"])
+        bot_tp = (st_pos.get(p.get("instId")) or [{}])[0].get("tp_px") if it["bot"] else None
+        it["tp"] = bot_tp or okx_tp
+        it["sl"] = okx_sl
+        if it["avg"] and it["mark"]:
+            mv = (it["mark"] - it["avg"]) / it["avg"] * 100
+            it["move"] = mv if it["side"] == "L" else -mv
+        else:
+            it["move"] = None
     items.sort(key=lambda x: -abs(x["upl"]))
     data = {
         "t": int(now * 1000),
@@ -1027,8 +1061,8 @@ td{transition:background .8s}
 <div class="bar"><span class="menu"><span>파일</span><span>홈</span><span>삽입</span><span>수식</span><span>데이터</span><span>보기</span></span></div>
 <div class="fx"><div class="nm" id="nm">A1</div><div class="ic">fx</div><div class="val" id="fxv">=SUM(B7:B30)</div></div>
 <div class="grid"><table id="t">
-<colgroup><col style="width:36px"><col style="width:96px"><col style="width:84px"><col style="width:76px"><col style="width:52px"><col style="width:92px"><col style="width:84px"><col style="width:84px"><col style="width:72px"><col style="width:66px"><col style="width:120px"></colgroup>
-<thead><tr><th class="rn"></th><th>A</th><th>B</th><th>C</th><th>D</th><th>E</th><th>F</th><th>G</th><th>H</th><th>I</th><th>J</th></tr></thead>
+<colgroup><col style="width:36px"><col style="width:96px"><col style="width:84px"><col style="width:76px"><col style="width:72px"><col style="width:66px"><col style="width:52px"><col style="width:92px"><col style="width:84px"><col style="width:84px"><col style="width:84px"><col style="width:84px"><col style="width:72px"><col style="width:110px"></colgroup>
+<thead><tr><th class="rn"></th><th>A</th><th>B</th><th>C</th><th>D</th><th>E</th><th>F</th><th>G</th><th>H</th><th>I</th><th>J</th><th>K</th><th>L</th><th>M</th></tr></thead>
 <tbody id="tb"></tbody></table></div>
 <div class="tabs"><a class="on" href="#">Sheet1</a><a href="REPORT_URL">Sheet2</a><span class="st" id="st">준비</span></div>
 <script>
@@ -1042,27 +1076,29 @@ function row(i,cells,cls=""){return `<tr class="${cls}"><td class="rn">${i}</td>
 function td(v,c=""){return `<td class="${c}">${v}</td>`}
 function render(d){
   const r=[];let i=1;
-  const E8=Array(8).fill(td(""));
+  const E8=Array(11).fill(td(""));
   r.push(row(i++,[td("미실현 합계","lbl c1"),td(sgn(d.upl_total),"n"+ng(d.upl_total)),...E8]));
   r.push(row(i++,[td("자동매매","lbl c1"),td(sgn(d.upl_bot),"n"+ng(d.upl_bot)),...E8]));
   r.push(row(i++,[td("잔고","lbl c1"),td(d.eq==null?"":num(d.eq),"n"),...E8]));
   r.push(row(i++,[td("건수","lbl c1"),td(String(d.items.length),"n"),...E8]));
-  r.push(row(i++,Array(10).fill(td(""))));
-  r.push(row(i++,["종목","미실현","수익률(%)","구분","출처","진입가","현재가","증거금","진행(%)","상태"].map((h,k)=>td(h,(k?"":"c1 ")+"c")),"h"));
+  r.push(row(i++,Array(13).fill(td(""))));
+  r.push(row(i++,["종목","미실현","수익률(%)","가격변동(%)","익절진행(%)","구분","출처","진입가","현재가","익절가","손절가","증거금","상태"].map((h,k)=>td(h,(k?"":"c1 ")+"c")),"h"));
   d.items.forEach(p=>{
     let prog="";
-    if(p.bot&&p.tp&&p.avg&&p.mark){const m=p.side==="L"?(p.mark-p.avg):(p.avg-p.mark);prog=(m/Math.abs(p.tp-p.avg)*100).toFixed(0);}
+    if(p.tp&&p.avg&&p.mark){const m=p.side==="L"?(p.mark-p.avg):(p.avg-p.mark);prog=(m/Math.abs(p.tp-p.avg)*100).toFixed(0);}
     const stt=p.bot?[p.be?"본절":"",p.partial?"분할":"",p.step?"확보":""].filter(Boolean).join("/"):"";
     r.push(row(i++,[
       td(p.inst,"c1"),
       `<td class="n${ng(p.upl)}" data-k="${p.inst}">${sgn(p.upl)}</td>`,
       td(sgn(p.roe),"n"+ng(p.roe)),
+      td(p.move==null?"":sgn(p.move),"n"+ng(p.move||0)),
+      td(prog===""?"익절 미설정":prog,(prog===""?"c lbl":"n"+ng(Number(prog)||0))),
       td(p.side==="L"?"매수":"매도","c"),td(p.bot?(p.src||"자동"):"수동","c"),
-      td(px(p.avg),"n"),td(px(p.mark),"n"),td(p.margin==null?"":num(p.margin,1),"n"),
-      td(prog,"n"+ng(Number(prog)||0)),td(stt,"c")
+      td(px(p.avg),"n"),td(px(p.mark),"n"),td(px(p.tp),"n"),td(px(p.sl),"n"),
+      td(p.margin==null?"":num(p.margin,1),"n"),td(stt,"c")
     ]));
   });
-  while(i<30){r.push(row(i++,Array(10).fill(td(""))));}
+  while(i<30){r.push(row(i++,Array(13).fill(td(""))));}
   document.getElementById("tb").innerHTML=r.join("");
   document.querySelectorAll("td[data-k]").forEach(el=>{
     const k=el.dataset.k, v=d.items.find(x=>x.inst===k).upl;
