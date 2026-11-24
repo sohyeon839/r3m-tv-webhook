@@ -117,6 +117,8 @@ STATS_EXCLUDE_SOURCES = {"클러스터"}
 # ----------------------------------------------------------------------------
 MANAGE_ENABLED = True
 MANAGE_POLL_SECONDS = 3            # 3초마다 포지션 확인
+# 시간 손절: 이 시간(분) 안에 본절(+1.2%)까지도 못 가면 그 가격에 정리 (신호 이름: 분)
+TIME_STOP_MIN: dict = {"오라클 저항": 360}   # 오라클 저항 6시간
 
 # 1) 본절 손절: 가격이 +1.0% 유리하게 가면 손절을 진입가 근처로 올림
 BREAKEVEN_TRIGGER_PCT = 0.012     # 분할 익절과 같은 시점(+1.2%)에 본절로
@@ -206,10 +208,10 @@ SCREENER_RULES = {
         "tf": "5m",
         "symbols": None,            # 전 종목
         "max_age_sec": 180,         # 뜬 지 3분 이내만
-        "margin": 150,              # 증거금 150 USDT (규칙은 3배 기준, 실제는 5배로 → 포지션 750, 가격 기준 익절·손절 거리는 그대로)
-        "leverage": 3,
-        "tp_pct": 0.10,             # 증거금 대비 +10% 익절 (3배 → 가격 +3.33%)
-        "sl_pct": 0.05,             # 증거금 대비 -5% 손절 (3배 → 가격 -1.67%)
+        "margin": 100,              # 증거금 100 USDT (실제 5배 → 포지션 500). 손절을 넓힌 만큼 줄여서 손절 1번 약 -17
+        "leverage": 3,              # 아래 % 는 3배 기준 (실제 5배로 들어가도 가격 기준 거리는 그대로)
+        "tp_pct": 0.15,             # 가격 -5.0% 에서 익절 (숏)
+        "sl_pct": 0.105,            # 가격 +3.5% 에서 손절 (저항선 위 꼬리 버티기, 큰 사고만 막음)
     },
 }
 
@@ -235,12 +237,14 @@ HOOK_RULES = {
         "leverage": LEVERAGE,
     },
     "oracle": {             # 오라클 저항 (API 키가 멈췄을 때 zetro 알림으로 대신 받기)
-        "margin": 150,
+        "margin": 100,
+        "tp_pct": 0.15,       # 가격 -5.0% 익절 (3배 기준)
+        "sl_pct": 0.105,      # 가격 +3.5% 손절 (3배 기준)
         "symbols": None,
         "intervals": {"5"},
         "sides": {"short"},   # 저항 닿음 → 숏만
         "max_age_sec": 600,
-        "leverage": LEVERAGE,
+        "leverage": 3,
     },
     "dip_diamond": {        # 급락 매수 다이아
         "enabled": False,
@@ -2299,6 +2303,31 @@ def manage_positions_loop():
                 if not entry or not mark:
                     continue
                 gain = (mark - entry) / entry if side == "L" else (entry - mark) / entry
+
+                # 0) 시간 손절: 정해둔 시간 안에 본절까지도 못 가면 정리
+                ts_min = TIME_STOP_MIN.get(e.get("source") or "")
+                opened = e.get("opened_at") or 0
+                if (ts_min and opened and not e.get("be_done") and not e.get("time_stopped")
+                        and time.time() * 1000 - opened >= ts_min * 60_000):
+                    pos_raw = str(p.get("pos") or "0").lstrip("-")
+                    try:
+                        old_algos = _executor.pending_tpsl_ids(inst_id)
+                        _executor.close_partial(inst_id, side, pos_raw)
+                        with _state_lock:
+                            e["time_stopped"] = True
+                            save_state(_state)
+                        try:
+                            _executor.cancel_algos(inst_id, old_algos)
+                        except Exception:  # noqa: BLE001
+                            pass   # 포지션이 닫히면 같이 사라지는 경우가 많음
+                        log.info("%s 시간 손절: %d분 지나도 본절 못 감 → 정리 (현재 %+.2f%%)", inst_id, ts_min, gain * 100)
+                        notify("⏰ 시간 손절 (OKX)",
+                               f"📊 종목: {inst_id}{' · ' + e['source'] if e.get('source') else ''}\n"
+                               f"{ts_min // 60}시간이 지나도 본절까지 못 가서 정리했어요.\n"
+                               f"정리할 때 가격 변화: {gain * 100:+.2f}%")
+                    except Exception as ex:  # noqa: BLE001
+                        log.warning("%s 시간 손절 실패: %s", inst_id, format_okx_error(ex))
+                    continue
 
                 # 1) 본절 손절
                 if not e.get("be_done") and gain >= BREAKEVEN_TRIGGER_PCT:
