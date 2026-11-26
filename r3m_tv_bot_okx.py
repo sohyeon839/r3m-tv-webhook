@@ -803,6 +803,62 @@ def purge_old_journal() -> None:
     save_state(_state)
 
 
+# 하루 기록 지우기 (한 번만 실행): 이 날짜에 봇이 켜지기 전까지 한 거래를 기록지·누적 성적·오늘 한도에서 지움
+# → 그날 0시처럼 다시 시작. 다시 쓰려면 날짜와 id를 바꾸면 돼요.
+WIPE_DAY = {"date": "2026-11-26", "id": "wipe-1126"}
+
+
+def wipe_day_once() -> None:
+    date, wid = WIPE_DAY.get("date"), WIPE_DAY.get("id")
+    if not date or not wid:
+        return
+    with _state_lock:
+        done = _state.setdefault("wiped", [])
+        if wid in done:
+            return
+        now_ms = int(time.time() * 1000)
+        d0 = int(datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=KST).timestamp() * 1000)
+        tl = _state.get("trade_log", [])
+        gone = [t for t in tl if d0 <= t.get("t", 0) < now_ms]
+        _state["trade_log"] = [t for t in tl if t not in gone]
+        # 누적 성적에서 빼기
+        st = _cum_stats()
+        smin = _stats_start_ms()
+        for t in gone:
+            if t.get("t", 0) < smin or t.get("src") in STATS_EXCLUDE_SOURCES:
+                continue
+            pnl = float(t.get("pnl", 0.0))
+            key = "win" if pnl >= 0 else "loss"
+            st[key] = max(0, st.get(key, 0) - 1)
+            st["pnl"] = st.get("pnl", 0.0) - pnl
+            src = st.get("by_source", {}).get(t.get("src") or "기타")
+            if src:
+                src[key] = max(0, src.get(key, 0) - 1)
+                src["pnl"] = src.get("pnl", 0.0) - pnl
+                if not src.get("win") and not src.get("loss"):
+                    st["by_source"].pop(t.get("src") or "기타", None)
+        rest = [float(t.get("pnl", 0.0)) for t in _state["trade_log"]
+                if t.get("t", 0) >= smin and t.get("src") not in STATS_EXCLUDE_SOURCES]
+        st["best"] = max(rest) if rest else None
+        st["worst"] = min(rest) if rest else None
+        # 그날 기록지 칸: 0시 잔액·입출금은 두고 거래만 0으로
+        day = _state.get("journal", {}).get(date)
+        if day:
+            day.update({"win": 0, "be": 0, "loss": 0, "pnl": 0.0, "by_source": {}})
+        # 오늘 한도·카운터 초기화 (오늘이 그 날짜일 때)
+        if _today() == date:
+            for k in ("daily_pnl", "daily_sl", "daily_symbol_sl", "daily_trade_stats",
+                      "daily_win_loss", "daily_base"):
+                _state.pop(k, None)
+        done.append(wid)
+        save_state(_state)
+    total = sum(float(t.get("pnl", 0.0)) for t in gone)
+    log.info("%s 기록 %d건(합계 %+.2f) 지움", date, len(gone), total)
+    notify("🧹 오늘 기록 초기화",
+           f"{date} 거래 {len(gone)}건 (합계 {total:+.2f} USDT)을 기록지·누적 성적에서 지웠어요.\n"
+           f"오늘 손실 한도도 0시처럼 다시 시작해요.\n(OKX 실제 잔고는 그대로예요)")
+
+
 def backfill_journal() -> None:
     with _state_lock:
         done = set(_state.get("backfilled_v2", []))
@@ -2569,6 +2625,7 @@ def main():
     sync_positions_from_exchange()
     recover_bot_positions()
     purge_old_journal()
+    wipe_day_once()
     seed_journal_today()
 
     log.info("상태 파일 위치: %s (%s)", STATE_FILE.resolve(),
