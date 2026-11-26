@@ -689,8 +689,44 @@ def classify_close(pnl: float, row: Optional[dict]) -> str:
     return "win"
 
 
+def trades_csv() -> bytes:
+    """거래 기록 전체를 엑셀에서 열 수 있는 CSV로 (한글 깨짐 방지 BOM 포함)"""
+    import csv
+    import io
+    cols = [("시간(KST)", None), ("종목", "inst"), ("신호", "src"), ("방향", "side"), ("결과", "kind"),
+            ("실현손익", "pnl"), ("수수료전손익", "gross"), ("수수료", "fee"), ("펀딩비", "funding"),
+            ("진입가", "entry"), ("청산가", "close"), ("보유(분)", "hold_min"), ("증거금", "margin"),
+            ("배율", "lev"), ("익절거리", "tp_px_pct"), ("손절거리", "sl_px_pct"), ("본절", "be"), ("절반익절", "partial"), ("단계손절", "step"), ("시간손절", "time_stop")]
+    kind_ko = {"win": "익절", "be": "본절", "loss": "손절"}
+    side_ko = {"S": "숏", "L": "롱"}
+    with _state_lock:
+        rows = list(_state.get("trade_log", []))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([c[0] for c in cols])
+    for t in rows:
+        out = []
+        for name, key in cols:
+            if key is None:
+                out.append(datetime.fromtimestamp(t.get("t", 0) / 1000, KST).strftime("%Y-%m-%d %H:%M:%S"))
+                continue
+            v = t.get(key)
+            if key == "kind":
+                v = kind_ko.get(v, v)
+            elif key == "side":
+                v = side_ko.get(v, v)
+            elif isinstance(v, bool):
+                v = "O" if v else ""
+            out.append("" if v is None else v)
+        w.writerow(out)
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
+
+
+TRADE_LOG_MAX = 20000   # 거래 기록 최대 보관 건수 (한 달 수천 건도 넉넉히)
+
+
 def journal_record(inst_id: str, source: str, side: Optional[str], pnl: float,
-                   kind: Optional[str] = None) -> str:
+                   kind: Optional[str] = None, extra: Optional[dict] = None) -> str:
     """거래 1건을 기록지에 남김. 결과 종류(익절/본절/손절)를 돌려줌."""
     kind = kind or ("loss" if pnl < 0 else ("be" if pnl < 1.0 else "win"))
     day = _journal_day(_today())
@@ -700,10 +736,13 @@ def journal_record(inst_id: str, source: str, side: Optional[str], pnl: float,
     src[kind] += 1
     src["pnl"] += pnl
     log_list = _state.setdefault("trade_log", [])
-    log_list.append({"t": int(time.time() * 1000), "inst": inst_id, "src": source,
-                     "side": side, "pnl": round(pnl, 4), "kind": kind})
-    if len(log_list) > 1000:
-        del log_list[:-1000]
+    rec = {"t": int(time.time() * 1000), "inst": inst_id, "src": source,
+           "side": side, "pnl": round(pnl, 4), "kind": kind}
+    if extra:
+        rec.update({k: v for k, v in extra.items() if v is not None})
+    log_list.append(rec)
+    if len(log_list) > TRADE_LOG_MAX:
+        del log_list[:-TRADE_LOG_MAX]
     j = _state["journal"]
     if len(j) > 400:
         for k in sorted(j)[:-400]:
@@ -1453,7 +1492,7 @@ footer{{text-align:center;font-size:11px;color:var(--muted);margin-top:18px}}
 {dcards}
 <h2>최근 거래</h2>
 <div class="list">{tl}</div>
-<footer>봇 거래만 기록 · 수동 거래 제외 · 하루 기준 한국시간 0시</footer>
+<footer>봇 거래만 기록 · 수동 거래 제외 · 하루 기준 한국시간 0시<br><a href="{REPORT_PATH}/trades.csv" style="color:inherit">📥 전체 거래 기록 엑셀(CSV) 받기</a></footer>
 </div></body></html>"""
     return page.encode("utf-8")
 
@@ -1977,6 +2016,10 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
         pending_entry["be_done"] = False
         pending_entry["partial_done"] = False
         pending_entry["step_done"] = False
+        pending_entry["margin"] = round(notional / leverage, 2)
+        pending_entry["leverage"] = leverage
+        pending_entry["tp_pct_px"] = round(tp_pct / leverage, 5)   # 가격 기준 익절 거리
+        pending_entry["sl_pct_px"] = round(sl_pct / leverage, 5)   # 가격 기준 손절 거리
         pending_entry.pop("pending", None)
         save_state(_state)
         stats = record_trade_result(True)
@@ -2574,6 +2617,7 @@ def sl_watch_loop():
                     j_entries = _state.get("positions", {}).get(inst_id) or []
                     j_source = (j_entries[0].get("source") if j_entries else None) or "기타"
                     j_side = j_entries[0].get("side") if j_entries else None
+                    j0 = dict(j_entries[0]) if j_entries else {}
                 hist = _executor._request("GET", "/api/v5/account/positions-history",
                                           params={"instId": inst_id, "limit": "1"})
                 rows = hist.get("data", [])
@@ -2582,6 +2626,31 @@ def sl_watch_loop():
                 real_raw = rows[0].get("realizedPnl") if rows else None
                 pnl = float(real_raw) if real_raw not in (None, "") else gross
                 is_win = gross >= 0      # 익절/손절 판정은 수수료 빼기 전 기준 (본절이 손절로 잡히지 않게)
+                # 한 달 뒤 분석용 상세 기록 (진입·청산가, 보유 시간, 관리 단계)
+                r0 = rows[0] if rows else {}
+                def _f(x):
+                    try:
+                        return float(x) if x not in (None, "") else None
+                    except (TypeError, ValueError):
+                        return None
+                opened_ms = j0.get("opened_at") or (int(r0["cTime"]) if r0.get("cTime") else None)
+                extra = {
+                    "opened": opened_ms,
+                    "hold_min": round((time.time() * 1000 - opened_ms) / 60000, 1) if opened_ms else None,
+                    "entry": _f(r0.get("openAvgPx")) or j0.get("entry"),
+                    "close": _f(r0.get("closeAvgPx")),
+                    "gross": round(gross, 4),
+                    "fee": _f(r0.get("fee")),
+                    "funding": _f(r0.get("fundingFee")),
+                    "margin": j0.get("margin"),
+                    "lev": j0.get("leverage"),
+                    "tp_px_pct": j0.get("tp_pct_px"),
+                    "sl_px_pct": j0.get("sl_pct_px"),
+                    "be": bool(j0.get("be_done")),
+                    "partial": bool(j0.get("partial_done")),
+                    "step": bool(j0.get("step_done")),
+                    "time_stop": bool(j0.get("time_stopped")),
+                }
 
                 with _state_lock:
                     if not is_win:
@@ -2590,7 +2659,8 @@ def sl_watch_loop():
                     win_loss = record_win_loss(is_win)
                     daily_pnl = record_daily_pnl(pnl)
                     close_kind = journal_record(inst_id, j_source, j_side, pnl,
-                                                kind=classify_close(gross, rows[0] if rows else None))
+                                                kind=classify_close(gross, rows[0] if rows else None),
+                                                extra=extra)
                     maybe_notify_loss_limit()
                     if source:
                         record_cum_trade(source, pnl)
@@ -2661,6 +2731,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
+        elif path_only == REPORT_PATH + "/trades.csv":
+            body, ctype = trades_csv(), "text/csv; charset=utf-8"
         elif path_only == REPORT_PATH + "/icon.png":
             body, ctype = REPORT_ICON_180, "image/png"
         elif path_only == REPORT_PATH + "/icon64.png":
