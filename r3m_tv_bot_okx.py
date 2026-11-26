@@ -446,6 +446,10 @@ def _daily(key: str, defaults: dict) -> dict:
     return d
 
 
+# 손실 한도로 멈춘 날 다시 돌릴 때 이 줄을 바꿔서 커밋 (새 배포 → 오늘 한도 초기화)
+LIMIT_RESET_NOTE = "2026-11-26 09:2x 사용자 요청으로 다시 시작"
+
+
 def reset_sl_on_new_commit() -> None:
     """GitHub에서 코드를 수정해 새로 배포됐을 때만 오늘 손절 횟수를 0으로 초기화.
     (서버 재시작·Railway 재시작처럼 코드가 그대로면 초기화 안 함)"""
