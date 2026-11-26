@@ -104,6 +104,8 @@ SYMBOL_MARGIN_OVERRIDE = {
 }
 
 MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추가 진입 안 함
+MAX_BOT_POSITIONS = 6     # 봇 포지션 동시 최대 개수 (전 종목 합계, 수동 제외)
+MAX_SAME_SIDE = 4         # 같은 방향(숏끼리·롱끼리) 동시 최대 개수 — 장이 한쪽으로 쏠릴 때 한꺼번에 손절 방지
 SYMBOL_MAX_STACK_OVERRIDE = {}
 # 누적 성적 집계 시작 시각 (한국시간). 이 시각 이후 봇이 진입한 거래만 집계해요.
 # 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
@@ -1765,6 +1767,19 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
             return
         if symbol_sl_blocked(inst_id):
             log.info("%s 오늘 손절 %d회라 이 종목 진입 스킵", inst_id, MAX_SYMBOL_DAILY_SL)
+            return
+
+        # 봇 포지션 개수 제한 (전체 / 같은 방향)
+        bot_open = [x for i, ents in _state.get("positions", {}).items() if i != inst_id
+                    for x in (ents or [])[:1]
+                    if not x.get("manual") and (x.get("tp_px") or x.get("pending"))]
+        if MAX_BOT_POSITIONS and len(bot_open) >= MAX_BOT_POSITIONS:
+            log.info("%s 봇 포지션 %d개로 최대(%d개)라 진입 스킵", inst_id, len(bot_open), MAX_BOT_POSITIONS)
+            return
+        same = sum(1 for x in bot_open if x.get("side") == side)
+        if MAX_SAME_SIDE and same >= MAX_SAME_SIDE:
+            log.info("%s 같은 방향(%s) 포지션 %d개로 최대(%d개)라 진입 스킵", inst_id,
+                     "숏" if side == "S" else "롱", same, MAX_SAME_SIDE)
             return
 
         max_stack = SYMBOL_MAX_STACK_OVERRIDE.get(inst_id, MAX_STACK_POSITIONS)
