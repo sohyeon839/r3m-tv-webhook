@@ -1789,8 +1789,8 @@ def sync_positions_from_exchange() -> None:
 # 비트코인 급변동 필터: BTC가 크게 흔들릴 때는 알트 신호(아트로포스·오라클) 진입을 잠시 멈춤
 BTC_GUARD_ENABLED = True
 BTC_GUARD_INST = "BTC-USDT-SWAP"
-BTC_GUARD_MOVE_PCT = 0.010     # 15분 안에 BTC ±1.0% 이상 → 급등이면 숏 멈춤, 급락이면 롱 멈춤
-BTC_GUARD_RANGE_PCT = 0.008    # 5분봉 하나의 위아래 폭이 0.8% 이상 → 롱·숏 모두 멈춤 (흔들기)
+BTC_GUARD_MOVE_PCT = 0.015     # 15분 안에 BTC ±1.5% 이상 → 급등이면 숏 멈춤, 급락이면 롱 멈춤
+BTC_GUARD_RANGE_PCT = 0.012    # 5분봉 하나의 위아래 폭이 1.2% 이상 → 롱·숏 모두 멈춤 (흔들기)
 BTC_GUARD_COOLDOWN_MIN = 30    # 조건이 사라지고 이 시간(분) 지나면 다시 진입
 BTC_GUARD_POLL_SEC = 20
 
