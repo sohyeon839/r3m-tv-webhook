@@ -1785,6 +1785,75 @@ def sync_positions_from_exchange() -> None:
 # 진입 처리
 # ----------------------------------------------------------------------------
 
+# ----------------------------------------------------------------------------
+# 비트코인 급변동 필터: BTC가 크게 흔들릴 때는 알트 신호(아트로포스·오라클) 진입을 잠시 멈춤
+BTC_GUARD_ENABLED = True
+BTC_GUARD_INST = "BTC-USDT-SWAP"
+BTC_GUARD_MOVE_PCT = 0.006     # 15분 안에 BTC ±0.6% 이상 → 급등이면 숏 멈춤, 급락이면 롱 멈춤
+BTC_GUARD_RANGE_PCT = 0.005    # 5분봉 하나의 위아래 폭이 0.5% 이상 → 롱·숏 모두 멈춤 (흔들기)
+BTC_GUARD_COOLDOWN_MIN = 30    # 조건이 사라지고 이 시간(분) 지나면 다시 진입
+BTC_GUARD_POLL_SEC = 20
+
+_btc_guard = {"S": 0.0, "L": 0.0, "why_S": "", "why_L": ""}   # 방향별 '이 시각까지 멈춤'(초)
+
+
+def btc_guard_blocked(side: str) -> Optional[str]:
+    if not BTC_GUARD_ENABLED:
+        return None
+    if time.time() < _btc_guard.get(side, 0.0):
+        return _btc_guard.get("why_" + side) or "BTC 급변동"
+    return None
+
+
+def btc_guard_loop():
+    log.info("BTC 급변동 필터 시작: 15분 ±%.1f%% / 5분봉 폭 %.1f%% / 풀림 %d분",
+             BTC_GUARD_MOVE_PCT * 100, BTC_GUARD_RANGE_PCT * 100, BTC_GUARD_COOLDOWN_MIN)
+    active = {"S": False, "L": False}
+    while True:
+        time.sleep(BTC_GUARD_POLL_SEC)
+        if not BTC_GUARD_ENABLED:
+            continue
+        try:
+            data = _executor._request("GET", "/api/v5/market/candles",
+                                      params={"instId": BTC_GUARD_INST, "bar": "5m", "limit": "4"})
+            c = data.get("data", []) or []   # 최신 봉이 맨 앞: [ts, o, h, l, c, ...]
+            if len(c) < 3:
+                continue
+            last = float(c[0][4])
+            move = last / float(c[2][1]) - 1           # 최근 15분(5분봉 3개) 변화
+            rng = max((float(k[2]) - float(k[3])) / float(k[1]) for k in c[:2])   # 지금 봉·직전 봉 위아래 폭
+            now = time.time()
+            until = now + BTC_GUARD_COOLDOWN_MIN * 60
+            hits = {}
+            if rng >= BTC_GUARD_RANGE_PCT:
+                why = f"BTC 5분봉 위아래 {rng * 100:.2f}% 흔들림"
+                hits["S"] = hits["L"] = why
+            if move >= BTC_GUARD_MOVE_PCT:
+                hits["S"] = f"BTC 15분 {move * 100:+.2f}% 급등"
+            elif move <= -BTC_GUARD_MOVE_PCT:
+                hits["L"] = f"BTC 15분 {move * 100:+.2f}% 급락"
+            for sd, why in hits.items():
+                _btc_guard[sd] = until
+                _btc_guard["why_" + sd] = why
+            started = [sd for sd in hits if not active[sd]]
+            for sd in started:
+                active[sd] = True
+            if started:
+                what = "롱·숏 모두" if (active["S"] and active["L"]) else ("숏" if started[0] == "S" else "롱")
+                notify("⚡ BTC 급변동 — 진입 멈춤",
+                       f"{hits[started[0]]}\n→ {what} 신규 진입을 멈춰요 (BTC {last:,.1f}).\n"
+                       f"잠잠해지고 {BTC_GUARD_COOLDOWN_MIN}분 지나면 다시 진입해요.\n"
+                       f"열려 있는 포지션은 익절·손절 그대로 유지돼요.")
+            ended = [sd for sd in ("S", "L") if active[sd] and now >= _btc_guard.get(sd, 0.0)]
+            for sd in ended:
+                active[sd] = False
+            if ended:
+                what = "롱·숏 모두" if len(ended) == 2 else ("숏" if ended[0] == "S" else "롱")
+                notify("✅ BTC 잠잠해짐 — 진입 재개", f"{what} 신규 진입을 다시 시작해요 (BTC {last:,.1f}).")
+        except Exception as ex:  # noqa: BLE001
+            log.warning("BTC 급변동 필터 조회 오류: %s", ex)
+
+
 def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
                    tp_pct: float = TAKE_PROFIT_PCT, sl_pct: float = STOP_LOSS_PCT,
                    source: str = "기타", margin: Optional[float] = None) -> None:
@@ -1798,6 +1867,10 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
         return
     if inst_id in BOT_EXCLUDE_SYMBOLS:
         log.info("%s 은 수동 전용 종목이라 봇 진입 안 함", inst_id)
+        return
+    why = btc_guard_blocked(side)
+    if why:
+        log.info("%s %s %s 신호 스킵 — %s", source, inst_id, "숏" if side == "S" else "롱", why)
         return
 
     # OKX에 이미 이 종목 포지션이 있으면(직접 들어간 수동 포지션 등) 봇은 들어가지 않음
@@ -2642,6 +2715,7 @@ def main():
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=sl_watch_loop, daemon=True).start()
     threading.Thread(target=manage_positions_loop, daemon=True).start()
+    threading.Thread(target=btc_guard_loop, daemon=True).start()
     threading.Thread(target=daily_close_loop, daemon=True).start()
     log.info("매매 기록지: %s", report_url())
     log.info("실시간 포지션: %s", report_url().replace(REPORT_PATH, POSITIONS_PATH))
