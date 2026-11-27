@@ -1836,6 +1836,20 @@ BTC_GUARD_POLL_SEC = 20
 _btc_guard = {"S": 0.0, "L": 0.0, "why_S": "", "why_L": ""}   # 방향별 '이 시각까지 멈춤'(초)
 
 
+# 이 시각(한국시간)까지 신규 진입 멈춤 (빈 문자열이면 사용 안 함). 열린 포지션은 그대로 관리.
+PAUSE_UNTIL_KST = "2026-11-28 03:00"
+
+
+def paused_until() -> Optional[str]:
+    if not PAUSE_UNTIL_KST:
+        return None
+    try:
+        until = datetime.strptime(PAUSE_UNTIL_KST, "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+    except ValueError:
+        return None
+    return PAUSE_UNTIL_KST if datetime.now(KST) < until else None
+
+
 def btc_guard_blocked(side: str) -> Optional[str]:
     if not BTC_GUARD_ENABLED:
         return None
@@ -1906,6 +1920,9 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
         return
     if inst_id in BOT_EXCLUDE_SYMBOLS:
         log.info("%s 은 수동 전용 종목이라 봇 진입 안 함", inst_id)
+        return
+    if paused_until():
+        log.info("%s %s 신호 스킵 — %s(한국시간)까지 진입 멈춤", source, inst_id, PAUSE_UNTIL_KST)
         return
     why = btc_guard_blocked(side)
     if why:
