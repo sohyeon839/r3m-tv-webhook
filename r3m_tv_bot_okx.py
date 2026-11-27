@@ -104,8 +104,8 @@ SYMBOL_MARGIN_OVERRIDE = {
 }
 
 MAX_STACK_POSITIONS = 1   # 같은 종목에 이미 포지션이 있으면 추가 진입 안 함
-MAX_BOT_POSITIONS = 6     # 봇 포지션 동시 최대 개수 (전 종목 합계, 수동 제외)
-MAX_SAME_SIDE = 4         # 같은 방향(숏끼리·롱끼리) 동시 최대 개수 — 장이 한쪽으로 쏠릴 때 한꺼번에 손절 방지
+MAX_BOT_POSITIONS = 12    # 봇 포지션 동시 최대 개수 (숏 6 + 롱 6, 수동 제외)
+MAX_SAME_SIDE = 6         # 같은 방향(숏끼리·롱끼리) 동시 최대 개수 — 장이 한쪽으로 쏠릴 때 한꺼번에 손절 방지
 SYMBOL_MAX_STACK_OVERRIDE = {}
 # 누적 성적 집계 시작 시각 (한국시간). 이 시각 이후 봇이 진입한 거래만 집계해요.
 # 새로 처음부터 세고 싶으면 이 값을 바꾸세요.
