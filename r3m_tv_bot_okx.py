@@ -91,6 +91,10 @@ def is_non_crypto(inst_id: str) -> bool:
     return False
 
 LONG_ENTRY_ENABLED = True   # 롱 진입 켬 (끄려면 False)
+# 잔고에 맞춰 증거금 자동 조절: 진입할 때마다 OKX 잔고(USDT 평가액)의 이 비율만큼 증거금으로 씀
+AUTO_MARGIN_PCT = 0.20       # 잔고의 20% (500 → 100, 700 → 140, 1000 → 200). 끄려면 0
+AUTO_MARGIN_MIN = 50.0       # 아무리 줄어도 이 아래로는 안 내림
+AUTO_MARGIN_MAX = 300.0      # 아무리 늘어도 이 위로는 안 올림
 LONG_LEVERAGE = 5        # 롱 5배 (증거금 100 → 포지션 500)
 # 롱일 때만 증거금을 따로 (신호 이름: 증거금)
 LONG_MARGIN_OVERRIDE: dict = {}   # 롱일 때만 증거금을 따로 (예: {"아트로포스": 150.0})
@@ -1907,6 +1911,30 @@ def btc_guard_loop():
             log.warning("BTC 급변동 필터 조회 오류: %s", ex)
 
 
+_auto_margin_cache = {"t": 0.0, "v": None}
+
+
+def auto_margin() -> Optional[float]:
+    """잔고의 AUTO_MARGIN_PCT 만큼 증거금 (1분 캐시). 잔고를 못 읽으면 None → 원래 설정값 사용."""
+    if not AUTO_MARGIN_PCT:
+        return None
+    now = time.time()
+    if _auto_margin_cache["v"] is not None and now - _auto_margin_cache["t"] < 60:
+        return _auto_margin_cache["v"]
+    try:
+        eq = _executor.get_account_summary()["usdt_balance"]
+    except Exception as e:  # noqa: BLE001
+        log.warning("잔고 조회 실패 — 이번 진입은 설정된 증거금 사용: %s", format_okx_error(e))
+        return None
+    if not eq or eq <= 0:
+        return None
+    v = round(min(AUTO_MARGIN_MAX, max(AUTO_MARGIN_MIN, eq * AUTO_MARGIN_PCT)), 0)
+    if v != _auto_margin_cache["v"]:
+        log.info("자동 증거금: 잔고 %.2f × %.0f%% → %.0f USDT", eq, AUTO_MARGIN_PCT * 100, v)
+    _auto_margin_cache.update({"t": now, "v": v})
+    return v
+
+
 def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
                    tp_pct: float = TAKE_PROFIT_PCT, sl_pct: float = STOP_LOSS_PCT,
                    source: str = "기타", margin: Optional[float] = None) -> None:
@@ -2000,6 +2028,9 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
         sl_pct = sl_pct * forced / leverage
         leverage = forced
     base_margin = margin if margin else MARGIN_USDT
+    am = auto_margin()
+    if am:
+        base_margin = am
     if side == "L" and source in LONG_MARGIN_OVERRIDE:
         base_margin = LONG_MARGIN_OVERRIDE[source]
     notional = SYMBOL_MARGIN_OVERRIDE.get(inst_id, base_margin) * leverage
@@ -2044,6 +2075,7 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
     label = "🔴 숏" if side == "S" else "🟢 롱"
     notify("🚀 신규 진입 (OKX)",
            f"{label} 진입 완료 · {source}\n━━━━━━━━━━\n📊 종목: {inst_id}\n📦 수량: {qty}\n"
+           f"💵 증거금: {notional / leverage:.0f} × {leverage}배 = 포지션 {notional:.0f} USDT\n"
            f"💰 진입가: {ref_price}\n━━━━━━━━━━\n"
            f"📈 오늘 성공: {stats['success']}회 / 실패: {stats['fail']}회")
 
