@@ -165,8 +165,8 @@ ZETRO_HOOK_PATH = "/zetro-hook/5472118043e07db5"
 # 매매 기록지 페이지 주소 (폰 브라우저로 열기). 뒤 글자는 비밀번호 역할이라 공유하지 마세요.
 REPORT_PATH = "/report/5472118043e07db5"
 POSITIONS_PATH = "/positions/5472118043e07db5"   # 실시간 포지션 페이지
-WEEKLY_TARGET_USD = 200.0                       # 일주일 목표 수익 (월요일 0시 ~ 일요일) = 하루 약 28.6
-DAILY_TARGET_USD = round(WEEKLY_TARGET_USD / 7, 1)  # 하루 목표 (약 28.6)
+WEEKLY_TARGET_USD = 150.0                       # 일주일 목표 수익 (월요일 0시 ~ 일요일)
+DAILY_TARGET_USD = 20.0                         # 하루 목표
 
 # ----------------------------------------------------------------------------
 # zetro 웹훅 진입 규칙 (zetro 알림 만들기에서 거래대금·위험/주의 코인 등 필터를 걸어둔 알림만 옴)
