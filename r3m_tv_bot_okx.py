@@ -1935,6 +1935,28 @@ def auto_margin() -> Optional[float]:
     return v
 
 
+# 신호가 왔는데 진입을 건너뛰면 텔레그램으로 이유 알림 (같은 종목·같은 이유는 10분에 한 번)
+SKIP_NOTIFY = True
+_skip_sent: dict = {}
+
+
+def notify_skip(inst_id: str, source: str, side: str, reason: str) -> None:
+    if not SKIP_NOTIFY:
+        return
+    key = f"{inst_id}|{reason[:12]}"
+    now = time.time()
+    if now - _skip_sent.get(key, 0) < 600:
+        return
+    _skip_sent[key] = now
+    if len(_skip_sent) > 500:
+        for k in sorted(_skip_sent, key=_skip_sent.get)[:250]:
+            _skip_sent.pop(k, None)
+    sym = inst_id.replace("-USDT-SWAP", "")
+    label = "🔴 숏" if side == "S" else "🟢 롱"
+    threading.Thread(target=notify, args=("⏭ 진입 건너뜀 (OKX)",
+                     f"{label} {sym} · {source}\n❕ 이유: {reason}"), daemon=True).start()
+
+
 def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
                    tp_pct: float = TAKE_PROFIT_PCT, sl_pct: float = STOP_LOSS_PCT,
                    source: str = "기타", margin: Optional[float] = None) -> None:
@@ -1951,10 +1973,12 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
         return
     if paused_until():
         log.info("%s %s 신호 스킵 — %s(한국시간)까지 진입 멈춤", source, inst_id, PAUSE_UNTIL_KST)
+        notify_skip(inst_id, source, side, f"{PAUSE_UNTIL_KST}까지 진입 멈춤 설정")
         return
     why = btc_guard_blocked(side)
     if why:
         log.info("%s %s %s 신호 스킵 — %s", source, inst_id, "숏" if side == "S" else "롱", why)
+        notify_skip(inst_id, source, side, f"BTC 급변동 필터 ({why})")
         return
 
     # OKX에 이미 이 종목 포지션이 있으면(직접 들어간 수동 포지션 등) 봇은 들어가지 않음
@@ -1972,14 +1996,17 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
                     "side": None, "qty": live_sz, "manual": True}]
                 save_state(_state)
                 log.info("%s 에 직접 들어간 포지션이 있어서 봇 진입 안 함", inst_id)
+                notify_skip(inst_id, source, side, "이 종목에 직접 들어간 포지션이 있음 (같은 종목은 OKX에서 하나로 합쳐져서 봇은 안 들어가요)")
                 return
 
     with _state_lock:
         if check_daily_sl_limit():
             log.info("오늘 손실 한도 도달로 신규 진입 스킵: %s", inst_id)
+            notify_skip(inst_id, source, side, "오늘 손실 한도 도달 (0시에 다시 시작)")
             return
         if symbol_sl_blocked(inst_id):
             log.info("%s 오늘 손절 %d회라 이 종목 진입 스킵", inst_id, MAX_SYMBOL_DAILY_SL)
+            notify_skip(inst_id, source, side, f"이 종목 오늘 손절 {MAX_SYMBOL_DAILY_SL}회")
             return
 
         # 봇 포지션 개수 제한 (전체 / 같은 방향)
@@ -1988,11 +2015,18 @@ def enter_position(symbol: str, side_raw: str, leverage: int = LEVERAGE,
                     if not x.get("manual") and (x.get("tp_px") or x.get("pending"))]
         if MAX_BOT_POSITIONS and len(bot_open) >= MAX_BOT_POSITIONS:
             log.info("%s 봇 포지션 %d개로 최대(%d개)라 진입 스킵", inst_id, len(bot_open), MAX_BOT_POSITIONS)
+            notify_skip(inst_id, source, side, f"봇 포지션 {len(bot_open)}개로 꽉 참 (최대 {MAX_BOT_POSITIONS}개, 수동 제외)")
             return
         same = sum(1 for x in bot_open if x.get("side") == side)
         if MAX_SAME_SIDE and same >= MAX_SAME_SIDE:
             log.info("%s 같은 방향(%s) 포지션 %d개로 최대(%d개)라 진입 스킵", inst_id,
                      "숏" if side == "S" else "롱", same, MAX_SAME_SIDE)
+            names = ", ".join(i.replace("-USDT-SWAP", "") for i, ents in _state.get("positions", {}).items()
+                              if i != inst_id and ents and not ents[0].get("manual")
+                              and (ents[0].get("tp_px") or ents[0].get("pending")) and ents[0].get("side") == side)
+            notify_skip(inst_id, source, side,
+                        f"봇 {'숏' if side == 'S' else '롱'} {same}개로 꽉 참 (최대 {MAX_SAME_SIDE}개, 수동 제외)\n"
+                        f"📌 지금 봇 {'숏' if side == 'S' else '롱'}: {names}")
             return
 
         max_stack = SYMBOL_MAX_STACK_OVERRIDE.get(inst_id, MAX_STACK_POSITIONS)
